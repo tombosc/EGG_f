@@ -120,7 +120,7 @@ class Interaction:
         RuntimeError: Appending empty and non-empty interactions logs. Normally this shouldn't happen!
         """
 
-        def _check_cat(lst):
+        def _check_cat(lst, variable_size=False):
             if all(x is None for x in lst):
                 return None
             # if some but not all are None: not good
@@ -129,7 +129,22 @@ class Interaction:
                     "Appending empty and non-empty interactions logs. "
                     "Normally this shouldn't happen!"
                 )
-            return torch.cat(lst, dim=0)
+            if not variable_size:
+                return torch.cat(lst, dim=0)
+            else:
+                # lst is a list of (bs, L, d) where L is variable
+                # need to transpose the 2 first dim (so that the variable dim
+                # comes first) and pass that to pad_sequence:
+                transposed_lst = [e.transpose(0, 1) for e in lst]
+                padded = torch.nn.utils.rnn.pad_sequence(transposed_lst, batch_first=True,
+                        padding_value=0)
+                # we get (len(lst), max(L), bs, d)
+                padded = padded.transpose(1, 2) 
+                # -> (len(lst), bs, max(L), d)
+                # now we can flatten the 2 dimensions:
+                dims = padded.size()
+                return padded.reshape((-1,) + dims[2:])
+            
 
         assert interactions, "list must not be empty"
         assert all(len(x.aux) == len(interactions[0].aux) for x in interactions)
@@ -139,12 +154,15 @@ class Interaction:
             aux[k] = _check_cat([x.aux[k] for x in interactions])
 
         return Interaction(
-            sender_input=_check_cat([x.sender_input for x in interactions]),
-            receiver_input=_check_cat([x.receiver_input for x in interactions]),
+            sender_input=_check_cat([x.sender_input for x in interactions],
+                variable_size=True),
+            receiver_input=_check_cat([x.receiver_input for x in interactions],
+                variable_size=True),
             labels=_check_cat([x.labels for x in interactions]),
             message=_check_cat([x.message for x in interactions]),
             message_length=_check_cat([x.message_length for x in interactions]),
-            receiver_output=_check_cat([x.receiver_output for x in interactions]),
+            receiver_output=_check_cat([x.receiver_output for x in
+                interactions], variable_size=True),
             aux=aux,
         )
 
