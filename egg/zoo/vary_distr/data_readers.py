@@ -119,7 +119,7 @@ class GeneratedData(Dataset):
         def generate_example():
             # TODO is it max_value, or max_value+1 in embedding?
             # TODO assert that there can't be 0 distractors, it seems to happen
-            n_distractors = rng.choice(max_distractors)
+            n_distractors = rng.integers(low=min_distractors, high=max_distractors)
             label = rng.choice(n_distractors+1) 
             features = rng.integers(low=1, high=max_value+1,
                                     size=(n_distractors+1,
