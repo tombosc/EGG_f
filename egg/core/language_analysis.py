@@ -10,6 +10,7 @@ from typing import Callable, Union
 import editdistance
 import numpy as np
 import torch
+from torch.distributions import Categorical
 from scipy.spatial import distance
 from scipy.stats import spearmanr
 
@@ -352,6 +353,15 @@ class PrintValidationEvents(Callback):
         print([m.tolist() for m in logs.labels], sep="\n")
         print("MESSAGES")
         print([m.tolist() for m in logs.message], sep="\n")
+        print("MESSAGES: ENTROPY")
+        #  import pdb; pdb.set_trace()
+        concat_msgs = logs.message.view(-1)
+        val, counts = concat_msgs.unique(return_counts=True)
+        counts_no_pad = torch.Tensor([c for v, c in zip(val.tolist(),
+            counts.tolist()) if v != 0])
+        f = counts_no_pad / counts_no_pad.sum().float()
+        distrib = Categorical(f)
+        print(distrib.entropy())
         print("OUTPUTS")
         print([m.tolist() for m in logs.receiver_output], sep="\n")
 

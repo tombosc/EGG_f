@@ -57,5 +57,6 @@ def test_data_generation():
         assert(torch.all(sender_input < max_value + 1))
         assert(torch.all(0 <= sender_input))
         assert(sender_input.size(1) == n_features)
+        # most important test: whether the target is well-positionned
         assert(torch.all(sender_input[0] == receiver_input[label]))
     assert(data.get_n_features() == n_features)

@@ -244,6 +244,8 @@ class RnnSenderReinforce(nn.Module):
         max_len,
         num_layers=1,
         cell="rnn",
+        condition_concat=False,
+        always_sample=False,
     ):
         """
         :param agent: the agent to be wrapped
@@ -252,6 +254,9 @@ class RnnSenderReinforce(nn.Module):
         :param hidden_size: the RNN cell's hidden state size
         :param max_len: maximal length of the output messages
         :param cell: type of the cell used (rnn, gru, lstm)
+        :param condition_concat: condition by concatenating if True, else by
+        initial hidden state.
+        :param always_sample: sample message even at test time.
         """
         super(RnnSenderReinforce, self).__init__()
         self.agent = agent
@@ -265,6 +270,7 @@ class RnnSenderReinforce(nn.Module):
         self.embed_dim = embed_dim
         self.vocab_size = vocab_size
         self.num_layers = num_layers
+        self.always_sample = always_sample
         self.cells = None
 
         cell = cell.lower()
@@ -273,10 +279,12 @@ class RnnSenderReinforce(nn.Module):
         if cell not in cell_types:
             raise ValueError(f"Unknown RNN Cell: {cell}")
 
+        input_size = embed_dim + hidden_size if condition_concat else embed_dim
+        self.condition_concat = condition_concat
         cell_type = cell_types[cell]
         self.cells = nn.ModuleList(
             [
-                cell_type(input_size=embed_dim, hidden_size=hidden_size)
+                cell_type(input_size=input_size, hidden_size=hidden_size)
                 if i == 0
                 else cell_type(input_size=hidden_size, hidden_size=hidden_size)
                 for i in range(self.num_layers)
@@ -299,11 +307,12 @@ class RnnSenderReinforce(nn.Module):
         ]  # only used for LSTM
 
         input = torch.stack([self.sos_embedding] * x.size(0))
+        if self.condition_concat:
+            input = torch.cat((input, prev_hidden[0]), dim=1)
 
         sequence = []
         logits = []
         entropy = []
-
         for step in range(self.max_len):
             for i, layer in enumerate(self.cells):
                 if isinstance(layer, nn.LSTMCell):
@@ -313,18 +322,28 @@ class RnnSenderReinforce(nn.Module):
                     h_t = layer(input, prev_hidden[i])
                 prev_hidden[i] = h_t
                 input = h_t
-
             step_logits = F.log_softmax(self.hidden_to_output(h_t), dim=1)
             distr = Categorical(logits=step_logits)
             entropy.append(distr.entropy())
+            # alternative to entropy loss? (as in VQVAE paper)
+            #  bs, vocab_size = step_logits.size()
+            #  max_entropy_d = torch.ones((1, vocab_size),
+            #          device=step_logits.device).expand(bs, -1)
+            #  max_entropy_d = max_entropy_d / max_entropy_d.sum().float()
+            #  entropy.append(-F.l1_loss(max_entropy_d, step_logits,
+            #                            reduction='none').sum(1))
+            #  print("l size", step_logits.size())
 
-            if self.training:
+            if self.training or self.always_sample:
                 x = distr.sample()
             else:
                 x = step_logits.argmax(dim=1)
             logits.append(distr.log_prob(x))
 
             input = self.embedding(x)
+            if self.condition_concat:
+                input = torch.cat((input, prev_hidden[0]), dim=1)
+
             sequence.append(x)
 
         sequence = torch.stack(sequence).permute(1, 0)

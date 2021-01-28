@@ -153,16 +153,17 @@ class Interaction:
         for k in interactions[0].aux:
             aux[k] = _check_cat([x.aux[k] for x in interactions])
 
+        VS=True  # set to True for vary_distr.
         return Interaction(
             sender_input=_check_cat([x.sender_input for x in interactions],
-                variable_size=True),
+                variable_size=VS),
             receiver_input=_check_cat([x.receiver_input for x in interactions],
-                variable_size=True),
+                variable_size=VS),
             labels=_check_cat([x.labels for x in interactions]),
             message=_check_cat([x.message for x in interactions]),
             message_length=_check_cat([x.message_length for x in interactions]),
             receiver_output=_check_cat([x.receiver_output for x in
-                interactions], variable_size=True),
+                interactions], variable_size=VS),
             aux=aux,
         )
 

@@ -214,6 +214,10 @@ class Trainer:
                     torch.nn.utils.clip_grad_norm_(
                         self.game.parameters(), self.grad_norm
                     )
+                #  print("DBG")
+                #  for name, p in self.game.named_parameters():
+                #      if p.grad != None:
+                #          print("grad({})={}".format(name, p.grad.mean()))
                 if self.scaler:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
