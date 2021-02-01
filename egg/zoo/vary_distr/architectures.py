@@ -6,6 +6,35 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
+from dataclasses import dataclass, fields
+from .data_readers import Data
+from simple_parsing import Serializable
+import egg.core as core
+
+@dataclass
+class EGGParameters(Serializable):
+    random_seed: int
+    batch_size: int
+    checkpoint_dir: str
+    optimizer: str 
+    lr: float
+    vocab_size: int
+    max_len: int
+
+    @classmethod
+    def from_argparse(cls, args):
+        """ Assumes that args is a namespace containing all the field names.
+        """
+        d = [getattr(args, f.name) for f in fields(cls)]
+        print(d)
+        return cls(*d)
+
+    def get_dict_dirname(self):
+        d = self.__dict__.copy()
+        del d['random_seed']
+        del d['checkpoint_dir']
+        return d
+
 
 #  class PositionalEncoding(nn.Module):
 #      """ Stolen from tutorial:
@@ -69,6 +98,24 @@ class SharedSubtractEncoder(nn.Module):
         else:
             return x
 
+@dataclass
+class Hyperparameters(Serializable):
+    seed: int = 0
+    embed_dim: int = 30
+    validation_batch_size: int = 0
+    length_coef: float = 0.
+    sender_entropy_coef: float = 0.
+    receiver_hidden: int = 30
+
+    def __post_init__(self):
+        assert(self.embed_dim > 0)
+        assert(self.receiver_hidden > 0)
+
+    def get_dict_dirname(self):
+        d = self.__dict__.copy()
+        del d['validation_batch_size']
+        return d
+
 
 class PragmaticSimpleSender(nn.Module):
     """ Reads a matrix, encode its first row relative to the other rows.
@@ -106,6 +153,54 @@ class DiscriReceiverEmbed(nn.Module):
         dots = torch.matmul(_input, torch.unsqueeze(x, dim=-1)).squeeze()
         dots = dots.masked_fill(mask, -float('inf'))
         return dots
+
+def create_game(core_params: EGGParameters, data: Data.Config,
+        hp: Hyperparameters, loss):
+    shared_encoder = SharedSubtractEncoder(
+        n_features=data.n_features,
+        dim_embed=hp.embed_dim,
+        max_value=data.max_value,
+    )
+    sender = PragmaticSimpleSender(
+        shared_encoder,
+    )
+
+    sender = core.RnnSenderReinforce( 
+        sender,
+        vocab_size=core_params.vocab_size,
+        embed_dim=hp.embed_dim,
+        #  hidden_size=opts.sender_hidden,
+        hidden_size=hp.embed_dim,
+        cell='lstm',
+        max_len=core_params.max_len,
+        condition_concat=True,
+        always_sample=True,
+    )
+    receiver = DiscriReceiverEmbed(
+            n_features=data.n_features,
+            n_hidden=hp.receiver_hidden,
+            dim_embed=hp.embed_dim,
+            n_embeddings=data.max_value,
+            encoder=shared_encoder,
+    )
+    receiver = core.RnnReceiverDeterministic(
+        receiver,
+        vocab_size=core_params.vocab_size,
+        embed_dim=hp.embed_dim,
+        hidden_size=hp.receiver_hidden,
+        cell='lstm',
+    )
+    game = core.SenderReceiverRnnReinforce(
+        sender,
+        receiver,
+        loss,
+        sender_entropy_coeff=hp.sender_entropy_coef,
+        receiver_entropy_coeff=0.,
+        length_cost=hp.length_coef,
+    )
+    return game
+
+
 
 #  class PragmaticReceiver(nn.Module):
 #      """ A transformer-based pragmatic receiver.

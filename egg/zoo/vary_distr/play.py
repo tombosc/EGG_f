@@ -5,22 +5,30 @@
 
 import argparse
 from math import prod
+import os
 
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
+from simple_parsing import ArgumentParser, Serializable
+from dataclasses import dataclass, fields
 
 import egg.core as core
-from egg.core import Callback, Interaction, PrintValidationEvents
+from egg.core import PrintValidationEvents
 
 import numpy as np
 
-from egg.zoo.vary_distr.data_readers import GeneratedData
+from egg.zoo.vary_distr.data_readers import Data
 from egg.zoo.vary_distr.architectures import (
     PragmaticSimpleSender, DiscriReceiverEmbed,
-    SharedSubtractEncoder, PragmaticSimpleReceiver
+    SharedSubtractEncoder, PragmaticSimpleReceiver,
+    Hyperparameters,EGGParameters, create_game,
 )
+
+from .config import compute_exp_dir, save_configs
+from .callbacks import InteractionSaver
+
 
 def exclude_params(parameters, excluded_params):
     other_params = []
@@ -32,64 +40,44 @@ def exclude_params(parameters, excluded_params):
     return other_params
 
 
-# the following section specifies parameters that are specific to our games: we will also inherit the
-# standard EGG parameters from https://github.com/facebookresearch/EGG/blob/master/egg/core/util.py
 def get_params(params):
-    parser = argparse.ArgumentParser()
-    # arguments concerning the input data and how they are processed
-    #  parser.add_argument('--train_data', type=str, default=None,
-    #                      help='Path to the train data')
-    #  parser.add_argument('--validation_data', type=str, default=None,
-    #                      help='Path to the validation data')
-    parser.add_argument('--validation_batch_size', type=int, default=512)
-    parser.add_argument('--length_coeff', type=float, default=0.)
-    parser.add_argument('--sender_entropy_coeff', type=float, default=0.,
-                        help='Reinforce entropy regularization coefficient for Sender, only relevant in Reinforce (rf) mode (default: 1e-1)')
-    #  parser.add_argument('--sender_hidden', type=int, default=32)
-    parser.add_argument('--receiver_hidden', type=int, default=30)
-    # arguments controlling the script output
+    parser = ArgumentParser()
+    parser.add_arguments(Data.Config, dest='data')
+    parser.add_arguments(Hyperparameters, dest='hp')
     parser.add_argument('--print_validation_events', default=False,
             action='store_true')
-    args = core.init(parser,params)
+    args = core.init(parser, params)
     return args
   
 
+
 def main(params):
     opts = get_params(params)
-    if (opts.validation_batch_size==0):
-        opts.validation_batch_size=opts.batch_size
-    print(opts, flush=True)
+    if (opts.hp.validation_batch_size==0):
+        opts.hp.validation_batch_size=opts.batch_size
 
-    N = 1024 * 5
+    N = opts.data.n_examples
     train_size = int(N * (3/5))
     val_size = int(N * (1/5))
     test_size = N - train_size - val_size
-    max_value = 4
-    n_features = 5
-    embed_dim = 50
-    max_distractors = 4
-    dataset = GeneratedData(
-        N,
-        max_value,
-        min_distractors=1,
-        max_distractors=max_distractors,
-        n_features=n_features,
-        seed=opts.random_seed,
-    )
+    # fetch random seed from global params
+    opts.data.seed = opts.random_seed
+    opts.hp.seed = opts.random_seed
+    # in order to keep compatibility with EGG's core (EGG's common CLI), we
+    # simply store read parameters in a dataclass.
+    core_params = EGGParameters.from_argparse(opts)
+    dataset = Data(opts.data)
 
-    def loss(_sender_input, _message, _receiver_input, receiver_output, labels):
-        #  print("sizes msg={}, receiver_in={}, receiv_out={}, lbl={}".format(
-        #      _message.size(), _receiver_input.size(), receiver_output.size(),
-        #      labels.size()))
-        pred = receiver_output.argmax(dim=1)
-        #  print("pred", pred)
-        #  print("labl", labels)
-        acc = (pred == labels).detach().float()
-        loss = F.cross_entropy(receiver_output, labels, reduction="none")
-        difficulty = dataset.difficulty(_sender_input)
-        return loss, {'acc': acc}
+    configs = {
+        'data': opts.data,
+        'hp': opts.hp,
+        'core': core_params,
+    }
+    print(configs)
 
-
+    exps_root = os.environ["EGG_EXPS_ROOT"]
+    exp_dir = compute_exp_dir(exps_root, configs)
+    save_configs(configs, exp_dir)
 
     n_combinations = dataset.n_combinations()
     if (n_combinations < N):
@@ -117,74 +105,34 @@ def main(params):
             shuffle=True, num_workers=1, collate_fn=collater,
             drop_last=True,
     )
-    val_loader = DataLoader(val_ds, batch_size=opts.validation_batch_size,
+    val_loader = DataLoader(val_ds, batch_size=opts.hp.validation_batch_size,
             shuffle=False, num_workers=1, collate_fn=collater,
             drop_last=True,
     )
     n_features = dataset.get_n_features()
+    embed_dim = opts.hp.embed_dim
+    n_features = opts.data.n_features
+    max_value = opts.data.max_value
     shared_encoder = SharedSubtractEncoder(
         n_features=n_features,
         dim_embed=embed_dim,
-        max_value=dataset.max_value,
+        max_value=max_value,
     )
-    sender = PragmaticSimpleSender(
-        shared_encoder,
-    )
-    # wrap the sender
-    sender = core.RnnSenderReinforce( 
-        sender,
-        vocab_size=opts.vocab_size,
-        embed_dim=embed_dim,
-        #  hidden_size=opts.sender_hidden,
-        hidden_size=embed_dim,
-        cell='lstm',
-        max_len=opts.max_len,
-        condition_concat=True,
-        always_sample=True,
-    )
-    # THIS IS BROKEN! the idea was to read the message while attenting it
-    #  receiver = PragmaticSimpleReceiver(
-    #      input_encoder=shared_encoder,
-    #      hidden_size=embed_dim,
-    #      max_msg_len=opts.max_len,
-    #      n_max_objects=max_distractors,
-    #      vocab_size=opts.vocab_size,
-    #  )
-    # Transformer version
-    #  receiver = PragmaticReceiver(
-    #          n_features=n_features,
-    #          n_hidden=opts.receiver_hidden,
-    #          dim_embed=embed_dim,
-    #          n_embeddings=max_value,
-    #          vocab_size=opts.vocab_size,
-    #          max_msg_len = opts.max_len,
-    #  )
-    # Beginning version
-    receiver = DiscriReceiverEmbed(
-            n_features=n_features,
-            n_hidden=opts.receiver_hidden,
-            dim_embed=embed_dim,
-            n_embeddings=max_value,
-            encoder=shared_encoder,
-    )
-    receiver = core.RnnReceiverDeterministic(
-        receiver,
-        vocab_size=opts.vocab_size, embed_dim=embed_dim,
-        hidden_size=opts.receiver_hidden, cell='lstm',
-    )
-    game = core.SenderReceiverRnnReinforce(
-        sender,
-        receiver,
-        loss,
-        sender_entropy_coeff=opts.sender_entropy_coeff,
-        receiver_entropy_coeff=0.,
-        length_cost=opts.length_coeff,
-    )
-    #  transformer_params = list(receiver.transformer.parameters())
-    #  params = [
-    #          {'params': transformer_params, 'lr': 0.0001},
-    #          {'params': other_params},
-    #  ]
+
+    def loss(_sender_input, _message, _receiver_input, receiver_output, labels):
+        #  print("sizes msg={}, receiver_in={}, receiv_out={}, lbl={}".format(
+        #      _message.size(), _receiver_input.size(), receiver_output.size(),
+        #      labels.size()))
+        pred = receiver_output.argmax(dim=1)
+        acc = (pred == labels).detach().float()
+        loss = F.cross_entropy(receiver_output, labels, reduction="none")
+        n_distractor = dataset.n_distractors(_sender_input)
+        #  n_necessary_features = Data.n_necessary_features(_sender_input)
+        return loss, {'acc': acc, 'n_distractor': n_distractor}
+
+
+    game = create_game(core_params, opts.data, opts.hp, loss)
+
     params = list(game.parameters())
     for n, p in game.named_parameters():
         print("{}: {} @ {}".format(n, p.size(), p.data_ptr()))
@@ -205,6 +153,9 @@ def main(params):
 
     callbacks = []
     callbacks.append(core.ConsoleLogger(print_train_loss=True, as_json=True))
+    callbacks.append(InteractionSaver(
+        exp_dir = exp_dir,
+    ))
     if (opts.print_validation_events == True):
         callbacks.append(core.PrintValidationEvents(n_epochs=opts.n_epochs))
 
