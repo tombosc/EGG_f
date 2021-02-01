@@ -21,8 +21,6 @@ import numpy as np
 
 from egg.zoo.vary_distr.data_readers import Data
 from egg.zoo.vary_distr.architectures import (
-    PragmaticSimpleSender, DiscriReceiverEmbed,
-    SharedSubtractEncoder, PragmaticSimpleReceiver,
     Hyperparameters,EGGParameters, create_game,
 )
 
@@ -113,11 +111,6 @@ def main(params):
     embed_dim = opts.hp.embed_dim
     n_features = opts.data.n_features
     max_value = opts.data.max_value
-    shared_encoder = SharedSubtractEncoder(
-        n_features=n_features,
-        dim_embed=embed_dim,
-        max_value=max_value,
-    )
 
     def loss(_sender_input, _message, _receiver_input, receiver_output, labels):
         #  print("sizes msg={}, receiver_in={}, receiv_out={}, lbl={}".format(

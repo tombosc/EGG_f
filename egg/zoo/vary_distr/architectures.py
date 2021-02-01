@@ -106,6 +106,7 @@ class Hyperparameters(Serializable):
     length_coef: float = 0.
     sender_entropy_coef: float = 0.
     receiver_hidden: int = 30
+    sender_type: str = 'simple'
 
     def __post_init__(self):
         assert(self.embed_dim > 0)
@@ -117,14 +118,8 @@ class Hyperparameters(Serializable):
         return d
 
 
-class PragmaticSimpleSender(nn.Module):
-    """ Reads a matrix, encode its first row relative to the other rows.
-
-    It is "Simple", because it only subtracts the average embedding of
-    distractors to the target embedding to get probabilities.
-
-    Contrast this with senders which reads a single vector, i.e. encode without
-    pragmatic considerations.
+class SimpleSender(nn.Module):
+    """ Encode the first row of the matrix. 
     """
     def __init__(self, encoder):
         super().__init__()
@@ -133,6 +128,34 @@ class PragmaticSimpleSender(nn.Module):
     def forward(self, x):
         return self.encoder(x, first_is_target=True)
 
+class TransformerSender(nn.Module):
+    """ Pragmatic: the target is "contextualized" before being encoded.
+    """
+    def __init__(self, encoder, embed_dim, max_objects, nhead=4):
+        super().__init__()
+        self.encoder = encoder
+        encoder_layer = nn.TransformerEncoderLayer(
+                d_model=embed_dim,
+                nhead=nhead,
+                dim_feedforward=embed_dim*4,
+        )
+        layer_norm = nn.LayerNorm(embed_dim)
+        self.transformer_encoder = nn.TransformerEncoder(
+            encoder_layer,
+            num_layers=2,
+            norm=layer_norm,
+        )
+        # target_embed will mark the target (the first row of sender_input)
+        self.target_embed = nn.Parameter(torch.randn(1, 1, embed_dim))
+
+    def forward(self, x):
+        embedded = self.encoder(x, first_is_target=False)
+        embedded[:, 0] = embedded[:, 0] + self.target_embed
+        out = self.transformer_encoder(
+            src=embedded.transpose(0, 1),
+            src_key_padding_mask=None,
+        ).transpose(0, 1) # (bs, lmax, n_feat)
+        return out[:, 0]
 
 class DiscriReceiverEmbed(nn.Module):
     """ A basic discriminative receiver, like DiscriReceiver, but which expect
@@ -154,16 +177,31 @@ class DiscriReceiverEmbed(nn.Module):
         dots = dots.masked_fill(mask, -float('inf'))
         return dots
 
-def create_game(core_params: EGGParameters, data: Data.Config,
-        hp: Hyperparameters, loss):
+def create_game(
+    core_params: EGGParameters,
+    data: Data.Config,
+    hp: Hyperparameters,
+    loss,
+):
     shared_encoder = SharedSubtractEncoder(
         n_features=data.n_features,
         dim_embed=hp.embed_dim,
         max_value=data.max_value,
     )
-    sender = PragmaticSimpleSender(
-        shared_encoder,
-    )
+    if hp.sender_type == 'simple':
+        sender = SimpleSender(
+            shared_encoder,
+        )
+    elif hp.sender_type == 'tfm':
+        sender = TransformerSender(
+            shared_encoder,
+            embed_dim=hp.embed_dim,
+            max_objects = data.max_distractors + 1,
+            nhead=4,
+        )
+
+    else:
+        raise ValueError()
 
     sender = core.RnnSenderReinforce( 
         sender,
@@ -215,11 +253,6 @@ def create_game(core_params: EGGParameters, data: Data.Config,
 #              n_embeddings + 1,
 #              dim_embed,
 #              padding_idx=self.padding_value,
-#          )
-#          self.positional_msg = PositionalEncoding(
-#              dim_embed,
-#              dropout=0.1,
-#              max_len=max_msg_len + 2,  # TODO why 2 and not 1?
 #          )
 #          self.embeddings_msg = nn.Embedding(
 #              vocab_size + 1,
