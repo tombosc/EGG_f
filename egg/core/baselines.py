@@ -63,6 +63,27 @@ class MeanBaseline(Baseline):
             self.mean_baseline = self.mean_baseline.to(loss.device)
         return self.mean_baseline
 
+class EMABaseline(Baseline):
+    """EMA baseline; all loss batches have equal importance/weight,
+    hence it is better if they are equally-sized.
+    """
+
+    def __init__(self, alpha=0.95):
+        super().__init__()
+        self.alpha = alpha
+        self.baseline = torch.zeros(1, requires_grad=False)
+
+    def update(self, loss: torch.Tensor) -> None:
+        if self.baseline.device != loss.device:
+            self.baseline = self.baseline.to(loss.device)
+
+        self.baseline = self.alpha * self.baseline + (1-self.alpha) * loss.detach().mean()
+
+    def predict(self, loss: torch.Tensor) -> torch.Tensor:
+        if self.baseline.device != loss.device:
+            self.baseline = self.baseline.to(loss.device)
+        return self.baseline
+
 
 class BuiltInBaseline(Baseline):
     """Built-in baseline; for any row in the batch, the mean of all other rows serves as a control variate.
