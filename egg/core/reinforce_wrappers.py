@@ -471,6 +471,7 @@ class SenderReceiverRnnReinforce(nn.Module):
         baseline_type: Baseline = MeanBaseline,
         train_logging_strategy: LoggingStrategy = None,
         test_logging_strategy: LoggingStrategy = None,
+        log_length: bool = False,
     ):
         """
         :param sender: sender agent
@@ -500,6 +501,7 @@ class SenderReceiverRnnReinforce(nn.Module):
         self.receiver_entropy_coeff = receiver_entropy_coeff
         self.loss = loss
         self.length_cost = length_cost
+        self.log_length = log_length
 
         self.baselines = defaultdict(baseline_type)
         self.train_logging_strategy = (
@@ -533,7 +535,7 @@ class SenderReceiverRnnReinforce(nn.Module):
         # care about the rest
         effective_log_prob_s = torch.zeros_like(log_prob_r)
 
-        for i in range(message.size(1)):
+        for i in range(message.size(1)):  # until max len
             not_eosed = (i < message_length).float()
             effective_entropy_s += entropy_s[:, i] * not_eosed
             effective_log_prob_s += log_prob_s[:, i] * not_eosed
@@ -546,7 +548,10 @@ class SenderReceiverRnnReinforce(nn.Module):
 
         log_prob = effective_log_prob_s + log_prob_r
 
-        length_loss = message_length.float() * self.length_cost
+        if self.log_length:
+            length_loss = message_length.float().log() * self.length_cost
+        else:
+            length_loss = message_length.float() * self.length_cost
 
         policy_length_loss = (
             (length_loss - self.baselines["length"].predict(length_loss))
