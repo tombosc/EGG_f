@@ -23,11 +23,11 @@ import numpy as np
 
 from egg.zoo.vary_distr.data_readers import Data
 from egg.zoo.vary_distr.architectures import (
-    Hyperparameters,EGGParameters, create_game,
+    Hyperparameters, EGGParameters, create_game,
 )
 
 from .config import compute_exp_dir, save_configs
-from .callbacks import InteractionSaver
+from .callbacks import InteractionSaver, FileJsonLogger
 
 def prod(iterable):  # python3.7
     return reduce(operator.mul, iterable, 1)
@@ -79,6 +79,8 @@ def main(params):
 
     exps_root = os.environ["EGG_EXPS_ROOT"]
     exp_dir = compute_exp_dir(exps_root, configs)
+    if os.path.exists(exp_dir):
+        raise ValueError("Dir {} exists.".format(exp_dir))
     save_configs(configs, exp_dir)
 
     n_combinations = dataset.n_combinations()
@@ -129,6 +131,8 @@ def main(params):
 
 
     game = create_game(core_params, opts.data, opts.hp, loss)
+    first_param = next(game.parameters())
+    print("Device={}".format(first_param.device))
 
     params = list(game.parameters())
     for n, p in game.named_parameters():
@@ -150,8 +154,14 @@ def main(params):
 
     callbacks = []
     callbacks.append(core.ConsoleLogger(print_train_loss=True, as_json=True))
+    callbacks.append(FileJsonLogger(
+        exp_dir=exp_dir,
+        filename="logs.txt",
+        print_train_loss=True
+    ))
     callbacks.append(InteractionSaver(
-        exp_dir = exp_dir,
+        exp_dir=exp_dir,
+        every_epochs=50,
     ))
     if (opts.print_validation_events == True):
         callbacks.append(core.PrintValidationEvents(n_epochs=opts.n_epochs))
