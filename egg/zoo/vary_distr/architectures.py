@@ -10,6 +10,7 @@ from dataclasses import dataclass, fields
 from .data_readers import Data
 from simple_parsing import Serializable
 import egg.core as core
+from egg.core.baselines import EMABaseline, MeanBaseline
 
 @dataclass
 class EGGParameters(Serializable):
@@ -104,9 +105,13 @@ class Hyperparameters(Serializable):
     embed_dim: int = 30
     validation_batch_size: int = 0
     length_coef: float = 0.
+    log_length: bool = False
     sender_entropy_coef: float = 0.
     receiver_hidden: int = 30
-    sender_type: str = 'simple'
+    sender_type: str = 'simple'  # 'simple' or 'tfm'
+    # tfm specific
+    n_heads: int = 4
+    n_layers: int = 2
 
     def __post_init__(self):
         assert(self.embed_dim > 0)
@@ -114,6 +119,9 @@ class Hyperparameters(Serializable):
 
     def get_dict_dirname(self):
         d = self.__dict__.copy()
+        if d['sender_type'] == 'simple':
+            for u in ['n_heads', 'n_layers']:
+                del d[u]
         del d['validation_batch_size']
         return d
 
@@ -131,18 +139,18 @@ class SimpleSender(nn.Module):
 class TransformerSender(nn.Module):
     """ Pragmatic: the target is "contextualized" before being encoded.
     """
-    def __init__(self, encoder, embed_dim, max_objects, nhead=4):
+    def __init__(self, encoder, embed_dim, max_objects, n_heads, n_layers):
         super().__init__()
         self.encoder = encoder
         encoder_layer = nn.TransformerEncoderLayer(
                 d_model=embed_dim,
-                nhead=nhead,
+                nhead=n_heads,
                 dim_feedforward=embed_dim*4,
         )
         layer_norm = nn.LayerNorm(embed_dim)
         self.transformer_encoder = nn.TransformerEncoder(
             encoder_layer,
-            num_layers=2,
+            num_layers=n_layers,
             norm=layer_norm,
         )
         # target_embed will mark the target (the first row of sender_input)
@@ -197,7 +205,8 @@ def create_game(
             shared_encoder,
             embed_dim=hp.embed_dim,
             max_objects = data.max_distractors + 1,
-            nhead=4,
+            n_heads=hp.n_heads,
+            n_layers=hp.n_layers,
         )
 
     else:
@@ -235,6 +244,8 @@ def create_game(
         sender_entropy_coeff=hp.sender_entropy_coef,
         receiver_entropy_coeff=0.,
         length_cost=hp.length_coef,
+        log_length=hp.log_length,
+        baseline_type=MeanBaseline,
     )
     return game
 
