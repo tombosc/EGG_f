@@ -4,8 +4,10 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-from math import prod
 import os
+from functools import reduce 
+import operator
+
 
 import torch
 import torch.nn.functional as F
@@ -27,6 +29,8 @@ from egg.zoo.vary_distr.architectures import (
 from .config import compute_exp_dir, save_configs
 from .callbacks import InteractionSaver
 
+def prod(iterable):  # python3.7
+    return reduce(operator.mul, iterable, 1)
 
 def exclude_params(parameters, excluded_params):
     other_params = []
