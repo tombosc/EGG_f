@@ -25,8 +25,51 @@ from egg.zoo.vary_distr.architectures import (
 )
 
 from .config import compute_exp_dir, save_configs
-from .callbacks import InteractionSaver, FileJsonLogger
+from .callbacks import InteractionSaver, FileJsonLogger, LRScheduler
 
+
+# Copied from "the annotated transformer"
+class NoamOpt:
+    "Optim wrapper that implements rate."
+    def __init__(self, model_size, factor, warmup, optimizer):
+        self.optimizer = optimizer
+        self._step = 0
+        self.warmup = warmup
+        self.factor = factor
+        self.model_size = model_size
+        self._rate = 0
+        
+    def step(self):
+        "Update parameters and rate"
+        self._step += 1
+        rate = self.rate()
+        for p in self.optimizer.param_groups:
+            p['lr'] = rate
+        self._rate = rate
+        self.optimizer.step()
+        
+    def rate(self, step = None):
+        "Implement `lrate` above"
+        if step is None:
+            step = self._step
+        return self.factor * \
+            (self.model_size ** (-0.5) *
+            min(step ** (-0.5), step * self.warmup ** (-1.5)))
+
+    def zero_grad(self):
+        self.optimizer.zero_grad()
+
+    @property 
+    def state(self):
+      return self.optimizer.state
+
+    @state.setter 
+    def state(self, new_state):
+        self.optimizer.state = new_state
+        
+def get_std_opt(params, d_model):
+    return NoamOpt(d_model, 2, 4000,
+            torch.optim.Adam(params, lr=0, betas=(0.9, 0.98), eps=1e-9))
 
 def exclude_params(parameters, excluded_params):
     other_params = []
@@ -148,6 +191,8 @@ def main(params):
 
     optimizer = core.build_optimizer(params)
 
+    #  optimizer = get_std_opt(params, opts.hp.embed_dim)
+
     callbacks = []
     callbacks.append(core.ConsoleLogger(print_train_loss=True, as_json=True))
     callbacks.append(FileJsonLogger(
@@ -162,10 +207,17 @@ def main(params):
     if (opts.print_validation_events == True):
         callbacks.append(core.PrintValidationEvents(n_epochs=opts.n_epochs))
 
-    trainer = core.Trainer(game=game, optimizer=optimizer,
+    if (opts.hp.lr_sched == True):
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5.0, gamma=0.95)
+        callbacks.append(LRScheduler(scheduler))
+
+    trainer = core.Trainer(game=game,
+                           optimizer=optimizer,
                            train_data=train_loader,
                            validation_data=val_loader,
-                           callbacks=callbacks)
+                           callbacks=callbacks,
+                           grad_norm=opts.hp.grad_norm,
+    )
     trainer.train(n_epochs=opts.n_epochs)
 
 

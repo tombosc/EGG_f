@@ -17,7 +17,7 @@ class EGGParameters(Serializable):
     random_seed: int
     batch_size: int
     checkpoint_dir: str
-    optimizer: str 
+    optimizer: str
     lr: float
     vocab_size: int
     max_len: int
@@ -70,7 +70,7 @@ class SharedSubtractEncoder(nn.Module):
         self.padding_value = 0
         # since 0 is a padding value, all the actual features go from 1 to
         # max_value+1 (not included). For each feature, the embedding will be
-        # different.
+        # different; that's why we need self.embed_vector.
         self.embeddings = nn.Embedding(1 + n_features * max_value, dim_embed)
         self.n_features = n_features
         self.embed_vector = (torch.arange(n_features) * max_value).view(1, 1, n_features)
@@ -112,6 +112,9 @@ class Hyperparameters(Serializable):
     # tfm specific
     n_heads: int = 4
     n_layers: int = 2
+    lr_sched: bool = False
+    grad_norm: float = None
+    C: str = ''  # a simple comment
 
     def __post_init__(self):
         assert(self.embed_dim > 0)
