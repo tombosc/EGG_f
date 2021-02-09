@@ -38,7 +38,7 @@ class NoamOpt:
         self.factor = factor
         self.model_size = model_size
         self._rate = 0
-        
+
     def step(self):
         "Update parameters and rate"
         self._step += 1
@@ -47,7 +47,7 @@ class NoamOpt:
             p['lr'] = rate
         self._rate = rate
         self.optimizer.step()
-        
+
     def rate(self, step = None):
         "Implement `lrate` above"
         if step is None:
@@ -59,14 +59,14 @@ class NoamOpt:
     def zero_grad(self):
         self.optimizer.zero_grad()
 
-    @property 
+    @property
     def state(self):
       return self.optimizer.state
 
-    @state.setter 
+    @state.setter
     def state(self, new_state):
         self.optimizer.state = new_state
-        
+
 def get_std_opt(params, d_model):
     return NoamOpt(d_model, 2, 4000,
             torch.optim.Adam(params, lr=0, betas=(0.9, 0.98), eps=1e-9))
@@ -170,8 +170,6 @@ def main(params):
 
 
     game = create_game(core_params, opts.data, opts.hp, loss)
-    first_param = next(game.parameters())
-    print("Device={}".format(first_param.device))
 
     params = list(game.parameters())
     for n, p in game.named_parameters():
@@ -208,15 +206,20 @@ def main(params):
         callbacks.append(core.PrintValidationEvents(n_epochs=opts.n_epochs))
 
     if (opts.hp.lr_sched == True):
-        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=5.0, gamma=0.95)
+        # put that on hold. I have not idea how to tune these params with such
+        # small datasets.
+        raise NotImplementedError()
+        scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1.0, gamma=0.95)
         callbacks.append(LRScheduler(scheduler))
+
+    grad_norm = opts.hp.grad_norm if opts.hp.grad_norm > 0 else None
 
     trainer = core.Trainer(game=game,
                            optimizer=optimizer,
                            train_data=train_loader,
                            validation_data=val_loader,
                            callbacks=callbacks,
-                           grad_norm=opts.hp.grad_norm,
+                           grad_norm=grad_norm,
     )
     trainer.train(n_epochs=opts.n_epochs)
 
