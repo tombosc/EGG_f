@@ -57,22 +57,20 @@ class Data(Dataset):
         self.frame = []
         self.rng = np.random.default_rng(c.seed)
 
-        #  def generate_example():
-        #      # TODO is it max_value, or max_value+1 in embedding?
-        #      # TODO assert that there can't be 0 distractors, it seems to happen
-        #      n_distractors = rng.integers(low=c.min_distractors, high=c.max_distractors)
-        #      n_necessary_features = rng.integers(low=c.min_distractors, high=c.max_distractors)
-        #      label = rng.choice(n_distractors+1)
-        #      features = rng.integers(
-        #          low=1,
-        #          high=c.max_value+1,
-        #          size=(n_distractors+1, c.n_features),
-        #      )
-        #      return (features, label)
+        def generate_example():
+            n_distractors = self.rng.integers(low=c.min_distractors, high=c.max_distractors)
+            n_necessary_features = self.rng.integers(low=c.min_distractors, high=c.max_distractors)
+            label = self.rng.choice(n_distractors+1)
+            features = self.rng.integers(
+                low=1,
+                high=c.max_value+1,
+                size=(n_distractors+1, c.n_features),
+            )
+            return (features, label)
 
 
         for i in range(c.n_examples):
-            sender_input, n_distractors = self.generate_example()
+            sender_input, n_distractors = generate_example()
             # receiver needs shuffled inputs
             permut = self.rng.permutation(np.arange(0, n_distractors+1))
             label = np.argwhere(permut == 0)[0]
@@ -83,11 +81,12 @@ class Data(Dataset):
                 torch.Tensor(receiver_input).long(),
             ))
 
-    def generate_example(self):
+    def generate_example_unused(self):
         #  print(n_distractors)
         #  n_necessary_features = self.rng.integers(1, self.n_features+1)
-        n_necessary_features = min(self.rng.geometric(p=0.35),
-                                   self.n_features)
+        #  n_necessary_features = min(self.rng.geometric(p=0.35),
+        #                             self.n_features)
+        n_necessary_features = self.n_features
         max_distractors = min(self.max_distractors,
                               n_necessary_features*(self.max_value)-1)
         #  print(self.min_distractors, max_distractors)
@@ -95,7 +94,6 @@ class Data(Dataset):
             n_distractors = max_distractors
         else:
             n_distractors = self.rng.integers(self.min_distractors, max_distractors)
-        #  print(n_necessary_features)
         necessary_features = self.rng.choice(self.n_features,
                 replace=False, size=n_necessary_features)
         features = np.zeros((n_distractors + 1, self.n_features))
@@ -139,7 +137,6 @@ class Data(Dataset):
                 if valid_vector(new_v):
                     #  print("Returns", vector, new_v)
                     return new_v
-
 
     def difficulty(self, sender_input):
         """ Sender_input is (bs, L_max, n_feat).
