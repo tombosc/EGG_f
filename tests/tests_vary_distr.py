@@ -6,6 +6,7 @@ import shutil
 import sys
 import torch
 from egg.zoo.vary_distr.data_readers import Data
+from collections import Counter
 
 
 def run_game(game, params):
@@ -95,3 +96,20 @@ def test_n_necessary_features():
     assert(n_necessary[1] == 3)
     data = Data(Data.Config())
     features, n_necessary_features = data.generate_example()
+
+def test_count_necess():
+    c = Data.Config(
+        n_examples = 1000,
+        max_value = 2,
+        n_features = 4,
+        min_distractors = 1,
+        max_distractors = 10,
+        seed = 2
+    )
+    data = Data(c)
+    counts = Counter()
+    for i in range(1000):
+        sender_input = data[i][0].unsqueeze(0)
+        counts[Data.n_necessary_features(sender_input).item()] += 1
+    print(counts)
+
