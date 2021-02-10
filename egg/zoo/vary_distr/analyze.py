@@ -16,11 +16,14 @@ n_nec = n_nec.float().tolist()
 lens = data.message_length.float().tolist()
 n_nec_unique = sorted(list(set(n_nec)))
 for i, n in enumerate(n_nec_unique):
-    data = np.asarray([l for l, n_ in zip(lens, n_nec) if n_ == n])
+    X = np.asarray([l for l, n_ in zip(lens, n_nec) if n_ == n])
     results = {
         'n_necessary': n,
-        'n_datapoints': len(data),
-        'mean_data': np.mean(data),
-        'std_data': np.std(data),
+        'n_datapoints': len(X),
+        'mean_data': np.mean(X),
+        'std_data': np.std(X),
     }
     print(json.dumps(results))
+    
+for m in data.message.float().tolist():
+    print(m)
