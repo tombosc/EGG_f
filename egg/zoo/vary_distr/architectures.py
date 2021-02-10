@@ -68,6 +68,7 @@ class MeanEmbedder(nn.Module):
         # since 0 is a padding value, all the actual features go from 1 to
         # max_value+1 (not included). For each feature, the embedding will be
         # different; that's why we need self.embed_vector.
+        self.embed_dim = dim_embed
         self.embeddings = nn.Embedding(1 + n_features * max_value, dim_embed)
         self.embed_vector = (torch.arange(n_features) * max_value).view(1, 1, n_features)
 
@@ -121,13 +122,15 @@ class Hyperparameters(Serializable):
 class SimpleSender(nn.Module):
     """ Encode the first row of the matrix. 
     """
-    def __init__(self, encoder):
+    def __init__(self, encoder, output_dim):
         super().__init__()
         self.encoder = encoder
+        self.output = nn.Linear(encoder.embed_dim, output_dim)
 
     def forward(self, x):
         x, _ = self.encoder(x, ret_first_row=True)
-        return x
+        out = self.output(x)
+        return out
 
 class TransformerSender(nn.Module):
     """ Pragmatic: the target is "contextualized" before being encoded.
@@ -200,6 +203,7 @@ def create_game(
     if hp.sender_type == 'simple':
         sender = SimpleSender(
             sender_embedder,
+            output_dim=hp.lstm_hidden,
         )
     elif hp.sender_type == 'tfm':
         sender = TransformerSender(
