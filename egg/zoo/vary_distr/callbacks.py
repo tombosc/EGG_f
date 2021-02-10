@@ -22,6 +22,13 @@ class InteractionSaver(Callback):
         if (epoch % self.every_epochs) == 0:
             self.dump_interactions(logs, "validation", epoch, self.exp_dir)
 
+class LRScheduler(Callback):
+    def __init__(self, scheduler):
+        self.scheduler = scheduler
+
+    def on_test_end(self, loss: float, logs: Interaction, epoch: int):
+        self.scheduler.step()
+
 class FileJsonLogger(Callback):
     def __init__(self, exp_dir, filename, print_train_loss=False):
         self.print_train_loss = print_train_loss

@@ -16,4 +16,4 @@
 # now, without sender_entropy_coef=0.5, bs=256 and lr=0.001: NO, 150 epochs nothing
 # 0.5, 0.5, lr3e-4, bs256: no
 # 1.5 0.5 lr=1e-3 bs=256: no
-python -m egg.zoo.vary_distr.play --print_validation_events --batch_size=256 --random_seed=3 --max_len 5 --lr=0.001 --n_epochs=100 --vocab_size 10 --sender_entropy_coef 0.1 --length_coef 0.1 --min_distractors 3 --max_distractors 10 --n_features 4 --sender_type=tfm --embed_dim 16 --n_layers 2 --n_heads 4 --log_length=False --receiver_hidden=30 --no_cuda
+python -m egg.zoo.vary_distr.play --print_validation_events --batch_size=256 --random_seed=1 --max_len 5 --lr=0.001 --n_epochs=1500 --vocab_size 10 --sender_entropy_coef 0.1 --length_coef 0.05 --min_distractors 3 --max_distractors 10 --n_features 4 --sender_type=tfm --embed_dim 16 --n_layers 2 --n_heads 4 --log_length=False --lstm_hidden=30 --receiver_type='att' --share_embed False -C "mask_S"
