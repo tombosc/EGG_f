@@ -113,6 +113,14 @@ class Data(Dataset):
                 features[0:i],
                 necessary_features,
             )
+        # Problem: this process makes it possible to perform better than random
+        # without transmitting any message! That's because the target has
+        # something in common with ALL the others...
+        # Potential solution: reshuffle. 
+        # n_distractors lose its meaning, and we will generate easier examples.
+        # But at least, messages are required to perform better than random.
+        permut = self.rng.permutation(np.arange(0, n_distractors+1))
+        features = features[permut]
         return features, n_distractors
 
     def generate_from(self, vector, set_vectors, changing_features):
