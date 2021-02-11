@@ -10,7 +10,7 @@ import numpy as np
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
-from itertools import chain, combinations
+from itertools import chain, combinations, product
 
 def powerset(iterable):
     "powerset([1,2,3]) --> () (1,) (2,) (3,) (1,2) (1,3) (2,3) (1,2,3)"
@@ -49,7 +49,6 @@ class Data(Dataset):
  
     def __init__(self, config):
         c = config
-        assert(0 < c.min_distractors < c.max_value)
         self.n_features = c.n_features
         self.max_value = c.max_value
         self.min_distractors = c.min_distractors
@@ -57,20 +56,22 @@ class Data(Dataset):
         self.frame = []
         self.rng = np.random.default_rng(c.seed)
 
-        def generate_example():
-            n_distractors = self.rng.integers(low=c.min_distractors, high=c.max_distractors)
-            n_necessary_features = self.rng.integers(low=c.min_distractors, high=c.max_distractors)
-            label = self.rng.choice(n_distractors+1)
-            features = self.rng.integers(
-                low=1,
-                high=c.max_value+1,
-                size=(n_distractors+1, c.n_features),
-            )
-            return (features, label)
+        #  self.all_possible_datapoints = np.asarray(list(product(range(1, c.max_value+1),
+        #          repeat=c.n_features)))
+        #  n_points = self.all_possible_datapoints.shape[0]
+        #  print("n_points", n_points)
+
+        #  def generate_example():
+        #      #  n_distractors = self.rng.integers(low=c.min_distractors, high=c.max_distractors)
+        #      n_distractors = min(self.rng.geometric(p=0.05),
+        #              self.max_distractors)
+        #      choice = self.rng.choice(n_points, size=n_distractors+1, replace=False)
+        #      features = self.all_possible_datapoints[choice]
+        #      return features, n_distractors
 
 
         for i in range(c.n_examples):
-            sender_input, n_distractors = generate_example()
+            sender_input, n_distractors = self.generate_example()
             # receiver needs shuffled inputs
             permut = self.rng.permutation(np.arange(0, n_distractors+1))
             label = np.argwhere(permut == 0)[0]
@@ -81,21 +82,17 @@ class Data(Dataset):
                 torch.Tensor(receiver_input).long(),
             ))
 
-    def generate_example_unused(self):
-        #  print(n_distractors)
-        #  n_necessary_features = self.rng.integers(1, self.n_features+1)
-        #  n_necessary_features = min(self.rng.geometric(p=0.35),
-        #                             self.n_features)
-        n_necessary_features = self.n_features
+    def generate_example(self):
+        n_necessary_features = self.rng.integers(1, self.n_features+1)
+        min_distractors = max(self.min_distractors, n_necessary_features)
         max_distractors = min(self.max_distractors,
                               n_necessary_features*(self.max_value)-1)
-        #  print(self.min_distractors, max_distractors)
-        if self.min_distractors == max_distractors:
+        if min_distractors == max_distractors:
             n_distractors = max_distractors
         else:
-            n_distractors = self.rng.integers(self.min_distractors, max_distractors)
+            n_distractors = self.rng.integers(min_distractors, max_distractors)
         necessary_features = self.rng.choice(self.n_features,
-                replace=False, size=n_necessary_features)
+                        replace=False, size=n_necessary_features)
         features = np.zeros((n_distractors + 1, self.n_features))
         features[0] = self.rng.integers(
             low=1,
@@ -104,21 +101,25 @@ class Data(Dataset):
         )
         #  print("necess={}, distract={}".format(n_necessary_features,
         #      n_distractors))
+        #  print("Features to change", necessary_features)
         for i in range(1, n_distractors+1):
-            #  print("Loop", i)
+            feature_to_change = necessary_features[(i-1) %
+                    len(necessary_features)]
             features[i] = self.generate_from(
                 features[0],
                 features[0:i],
-                necessary_features,
+                [feature_to_change],
             )
+        torched_features = torch.tensor(features).unsqueeze(0)
+        assert(Data.n_necessary_features(torched_features).item() == n_necessary_features)
         # Problem: this process makes it possible to perform better than random
         # without transmitting any message! That's because the target has
         # something in common with ALL the others...
         # Potential solution: reshuffle. 
         # n_distractors lose its meaning, and we will generate easier examples.
         # But at least, messages are required to perform better than random.
-        permut = self.rng.permutation(np.arange(0, n_distractors+1))
-        features = features[permut]
+        #  permut = self.rng.permutation(np.arange(0, n_distractors+1))
+        #  features = features[permut]
         return features, n_distractors
 
     def generate_from(self, vector, set_vectors, changing_features):
@@ -127,7 +128,6 @@ class Data(Dataset):
         """
         new_v = vector.copy()
         def valid_vector(candidate):
-            #  print(candidate == set_vectors)
             return ~np.any(np.all(candidate == set_vectors, 1))
 
         while True:
