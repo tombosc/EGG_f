@@ -58,11 +58,11 @@ class EGGParameters(Serializable):
 #          x = x + self.pe[:x.size(0), :]
 #          return self.dropout(x)
 
-class MeanEmbedder(nn.Module):
+class Embedder(nn.Module):
     """ For each object, embed its features differently for each feature
     position.
     """
-    def __init__(self, n_features, dim_embed, max_value):
+    def __init__(self, n_features, dim_embed, max_value, pooling):
         super().__init__()
         self.padding_value = 0
         # since 0 is a padding value, all the actual features go from 1 to
@@ -71,6 +71,12 @@ class MeanEmbedder(nn.Module):
         self.embed_dim = dim_embed
         self.embeddings = nn.Embedding(1 + n_features * max_value, dim_embed)
         self.embed_vector = (torch.arange(n_features) * max_value).view(1, 1, n_features)
+        assert(pooling in ['mean', 'cat'])
+        if pooling == 'mean':
+            self.output_dim = dim_embed
+        elif pooling == 'cat':
+            self.output_dim = dim_embed * n_features
+        self.pooling = pooling
 
     def forward(self, x, ret_first_row):
         """ if ret_first_row=True, return the encoding of the first object
@@ -80,7 +86,10 @@ class MeanEmbedder(nn.Module):
         mask = torch.all((x == self.padding_value), dim=2)
         device = x.device
         embedded = self.embeddings(x + self.embed_vector.to(device))
-        x = embedded.mean(2)
+        if self.pooling == 'mean':
+            x = embedded.mean(2)
+        elif self.pooling == 'cat':
+            x = embedded.view(bs, max_L, -1)
         x = x.masked_fill(mask.unsqueeze(-1), 0)
         if ret_first_row:
             return x[:, 0], mask
@@ -98,6 +107,7 @@ class Hyperparameters(Serializable):
     lstm_hidden: int = 30  
     sender_type: str = 'simple'  # 'simple' or 'tfm'
     receiver_type: str = 'simple' # 'simple' or 'att'
+    embedder: str = 'mean'
     # tfm specific
     n_heads: int = 4
     n_layers: int = 2
@@ -135,13 +145,13 @@ class SimpleSender(nn.Module):
 class TransformerSender(nn.Module):
     """ Pragmatic: the target is "contextualized" before being encoded.
     """
-    def __init__(self, encoder, embed_dim, output_dim, max_objects, n_heads, n_layers):
+    def __init__(self, encoder, embed_dim, output_dim, ff_dim, max_objects, n_heads, n_layers):
         super().__init__()
         self.encoder = encoder
         encoder_layer = nn.TransformerEncoderLayer(
                 d_model=embed_dim,
                 nhead=n_heads,
-                dim_feedforward=embed_dim*4,
+                dim_feedforward=ff_dim, 
         )
         layer_norm = nn.LayerNorm(embed_dim)
         self.transformer_encoder = nn.TransformerEncoder(
@@ -167,10 +177,10 @@ class DiscriReceiverEmbed(nn.Module):
     """ A basic discriminative receiver, like DiscriReceiver, but which expect
     integer (long) input to embed, not one-hot encoded.
     """
-    def __init__(self, n_features, embed_dim, n_hidden, n_embeddings, encoder):
+    def __init__(self, n_features, input_dim, n_hidden, n_embeddings, encoder):
         super().__init__()
         self.encoder = encoder
-        self.fc1 = nn.Linear(embed_dim, n_hidden)
+        self.fc1 = nn.Linear(input_dim, n_hidden)
 
     def forward(self, x, _input):
         # mask: (bs, L) set to False iff all features are padded
@@ -180,25 +190,17 @@ class DiscriReceiverEmbed(nn.Module):
         dots = dots.masked_fill(mask, -float('inf'))
         return dots
 
-def create_game(
+def create_encoder(
     core_params: EGGParameters,
     data: Data.Config,
     hp: Hyperparameters,
-    loss,
 ):
-    sender_embedder = MeanEmbedder(
+    sender_embedder = Embedder(
         n_features=data.n_features,
         dim_embed=hp.embed_dim,
         max_value=data.max_value,
+        pooling=hp.embedder,
     )
-    if hp.share_embed:
-        receiver_embedder = sender_embedder
-    else:
-        receiver_embedder = MeanEmbedder(
-            n_features=data.n_features,
-            dim_embed=hp.embed_dim,
-            max_value=data.max_value,
-        )
 
     if hp.sender_type == 'simple':
         sender = SimpleSender(
@@ -206,17 +208,32 @@ def create_game(
             output_dim=hp.lstm_hidden,
         )
     elif hp.sender_type == 'tfm':
+        if hp.embedder == 'cat':
+            in_dim = data.n_features * hp.embed_dim
+        elif hp.embedder == 'mean':
+            in_dim = hp.embed_dim
+
         sender = TransformerSender(
             sender_embedder,
-            embed_dim=hp.embed_dim,
+            embed_dim=in_dim,
             output_dim=hp.lstm_hidden,
+            ff_dim=4*hp.embed_dim,
             max_objects = data.max_distractors + 1,
             n_heads=hp.n_heads,
             n_layers=hp.n_layers,
         )
-
     else:
         raise ValueError()
+    return sender, sender_embedder
+
+
+def create_game(
+    core_params: EGGParameters,
+    data: Data.Config,
+    hp: Hyperparameters,
+    loss,
+):
+    sender, sender_embedder = create_encoder(core_params, data, hp)
 
     sender = core.RnnSenderReinforce( 
         sender,
@@ -228,10 +245,21 @@ def create_game(
         condition_concat=True,
         always_sample=True,
     )
+
+    if hp.share_embed:
+        receiver_embedder = sender_embedder
+    else:
+        receiver_embedder = Embedder(
+            n_features=data.n_features,
+            dim_embed=hp.embed_dim,
+            max_value=data.max_value,
+            pooling=hp.embedder,
+        )
+
     if hp.receiver_type == 'simple':
         receiver = DiscriReceiverEmbed(
                 n_features=data.n_features,
-                embed_dim=hp.embed_dim,
+                input_dim=receiver_embedder.output_dim,
                 n_hidden=hp.lstm_hidden,
                 n_embeddings=data.max_value,
                 encoder=receiver_embedder,
@@ -246,7 +274,7 @@ def create_game(
     elif hp.receiver_type == 'att':
         receiver = AttentionReceiver(
                 input_encoder=receiver_embedder,
-                embed_dim=hp.embed_dim,
+                embed_dim=receiver_embedder.output_dim,
                 hidden_size=hp.lstm_hidden,
                 max_msg_len=core_params.max_len,
                 n_max_objects=data.max_distractors,
@@ -254,6 +282,7 @@ def create_game(
         )
     else:
         raise ValueError()
+
     game = core.SenderReceiverRnnReinforce(
         sender,
         receiver,

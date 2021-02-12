@@ -47,13 +47,14 @@ class Data(Dataset):
         max_value: int = 4
         n_features: int = 5
  
-    def __init__(self, config):
+    def __init__(self, config, necessary_features=False):
         c = config
         self.n_features = c.n_features
         self.max_value = c.max_value
         self.min_distractors = c.min_distractors
         self.max_distractors = c.max_distractors
         self.frame = []
+        self.necessary_features = necessary_features
         self.rng = np.random.default_rng(c.seed)
 
         #  self.all_possible_datapoints = np.asarray(list(product(range(1, c.max_value+1),
@@ -76,11 +77,21 @@ class Data(Dataset):
             permut = self.rng.permutation(np.arange(0, n_distractors+1))
             label = np.argwhere(permut == 0)[0]
             receiver_input = sender_input[permut]
-            self.frame.append((
-                torch.Tensor(sender_input).long(),
-                torch.Tensor(label).long(),
-                torch.Tensor(receiver_input).long(),
-            ))
+            if necessary_features:
+                sender_input = torch.Tensor(sender_input).long()
+                n = self.n_necessary_features(sender_input.unsqueeze(0))
+                self.frame.append((
+                    sender_input,
+                    torch.Tensor(label).long(),
+                    torch.Tensor(receiver_input).long(),
+                    n.long(),
+                ))
+            else:
+                self.frame.append((
+                    torch.Tensor(sender_input).long(),
+                    torch.Tensor(label).long(),
+                    torch.Tensor(receiver_input).long(),
+                ))
 
     def generate_example(self):
         n_necessary_features = self.rng.integers(1, self.n_features+1)
@@ -197,4 +208,16 @@ class Data(Dataset):
     def __getitem__(self, idx):
         return self.frame[idx]
 
-
+    @staticmethod
+    def collater(list_tensors):
+        inputs = [e[0] for e in list_tensors]
+        tgt_index = torch.cat([e[1] for e in list_tensors])
+        outputs = [e[2] for e in list_tensors]
+        padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
+        padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
+        necessary_features = len(list_tensors[0]) == 4
+        if necessary_features:
+            n_necessary_features = torch.cat([e[3] for e in list_tensors])
+            return (padded_inputs, tgt_index, padded_outputs, n_necessary_features)
+        else:
+            return (padded_inputs, tgt_index, padded_outputs)
