@@ -203,7 +203,7 @@ def main(params):
             get_coef_fn=game.get_length_cost,
             set_coef_fn=game.set_length_cost,
             init_value=0,
-            inc=0.01,
+            inc=opts.hp.length_coef / 10.,
             every_n_epochs=opts.hp.length_coef_epoch,
             final_value=opts.hp.length_coef,
         )
