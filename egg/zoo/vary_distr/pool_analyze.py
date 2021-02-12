@@ -8,7 +8,7 @@ def last_epoch_performance(fn):
             pass
         line = json.loads(line)
         assert(line['mode'] == 'test')
-        return line['acc']
+        return line
 
 def print_lengths(fn):
     lengths = []
@@ -34,9 +34,11 @@ if __name__ == "__main__":
 
     exps_root = os.environ["EGG_EXPS_ROOT"]
     logs = os.path.join(exps_root, args.exp_dir, 'logs.txt')
-    acc = last_epoch_performance(logs)
+    test_results = last_epoch_performance(logs)
+    acc = test_results['acc']
+    H = test_results['sender_entropy']
     print(args.exp_dir)
-    if acc > 0.3:
-        print("Acc={}".format(acc))
+    if acc > 0.9:
+        print("Acc={:.3},H={:.3}".format(acc, H))
         results = os.path.join(exps_root, args.exp_dir, args.file_name)
         print_lengths(results)

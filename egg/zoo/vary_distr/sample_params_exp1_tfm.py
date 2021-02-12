@@ -3,23 +3,36 @@ import numpy as np
 def choice(l):
     return np.random.choice(l)
 
+embed_dim = choice([4, 8])
+if embed_dim == 8:
+    n_heads = choice([4, 8])
+else:
+    n_heads = 4
+
 params = {
     'batch_size': choice([64, 128, 256]),
     'random_seed': choice([1, 2, 3, 4, 5]),
     'max_len': choice([10]),
-    'lr': choice([0.0001, 0.0003, 0.001]),
-    'vocab_size': choice([10, 20, 40]),
-    'sender_entropy_coef': choice([0.05, 0.1, 0.2, 0.3]),
-    'length_coef': choice([0.05, 0.1, 0.2, 0.3]),
-    'min_distractors': choice([2, 3]),
-    'max_distractors': choice([6, 10]),
-    'n_features': choice([4, 6]),
-    'max_value': choice([4, 6]),
-    'embed_dim': choice([16]),
+    'lr': choice([0.0003, 0.001]),
+    'vocab_size': choice([20]),
+    # 'sender_entropy_coef': choice([0.05, 0.1, 0.2, 0.3]),
+    # 'length_coef': choiCE([0.05, 0.1, 0.2, 0.3]),
+    'length_coef': choice([1e-4, 1e-3, 1e-2, 1e-1]),
+    'length_coef_epoch': choice([0, 100]),
+    'sender_entropy_coef': choice([0, 1e-3, 1e-2, 1e-1]),
+    'lstm_hidden': choice([20, 30, 40]),
+    'min_distractors': choice([1]),
+    'max_distractors': choice([5]),
+    'n_features': choice([3]),
+    'max_value': choice([5]),
+    'embed_dim': embed_dim,
     'sender_type': 'tfm',
-    'n_heads': choice([2]),
-    'n_layers': choice([2, 3]),
+    'receiver_type': 'simple',
+    'n_heads': n_heads,
+    'n_layers': choice([2]),
     'n_examples': 1024*5,
+    'embedder': 'cat',
+    'C': 'fixH',
 }
 
 if __name__ == "__main__":
