@@ -514,6 +514,15 @@ class SenderReceiverRnnReinforce(nn.Module):
             if test_logging_strategy is None
             else test_logging_strategy
         )
+        
+    def get_length_cost(self):
+        """ Useful for callbacks."""
+        return self.length_cost
+
+    def set_length_cost(self, new_val):
+        """ Useful for callbacks."""
+        self.length_cost = new_val
+
 
     def forward(self, sender_input, labels, receiver_input=None):
         message, log_prob_s, entropy_s = self.sender(sender_input)
