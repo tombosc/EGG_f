@@ -324,7 +324,8 @@ class RnnSenderReinforce(nn.Module):
                 input = h_t
             step_logits = F.log_softmax(self.hidden_to_output(h_t), dim=1)
             distr = Categorical(logits=step_logits)
-            entropy.append(distr.entropy())
+            #  entropy.append(distr.entropy())
+            entropy.append(Categorical(logits=step_logits[:, 1:]).entropy())
             # alternative to entropy loss? (as in VQVAE paper)
             #  bs, vocab_size = step_logits.size()
             #  max_entropy_d = torch.ones((1, vocab_size),
@@ -333,7 +334,6 @@ class RnnSenderReinforce(nn.Module):
             #  entropy.append(-F.l1_loss(max_entropy_d, step_logits,
             #                            reduction='none').sum(1))
             #  print("l size", step_logits.size())
-
             if self.training or self.always_sample:
                 x = distr.sample()
             else:
@@ -551,6 +551,11 @@ class SenderReceiverRnnReinforce(nn.Module):
         if self.log_length:
             length_loss = message_length.float().log() * self.length_cost
         else:
+            # the following modification to the length penalty helped me debug
+            # the entropy loss. By encouraging the length to be close to 2, and
+            # not 1, we can then modify the entropy loss and make sure 
+            # the length loss doesn't interfere
+            #  length_loss = (message_length.float() - 2)**2 * self.length_cost
             length_loss = message_length.float() * self.length_cost
 
         policy_length_loss = (
@@ -564,6 +569,10 @@ class SenderReceiverRnnReinforce(nn.Module):
         optimized_loss = policy_length_loss + policy_loss - weighted_entropy
         # if the receiver is deterministic/differentiable, we apply the actual loss
         optimized_loss += loss.mean()
+        # optimized_loss uses baselines! same gradient but incomparable values!
+        #  full_loss = ((length_loss * effective_log_prob_s).mean() +
+                     #  (loss * log_prob).mean() +
+                     #  (loss.mean()))
 
         if self.training:
             self.baselines["loss"].update(loss)
