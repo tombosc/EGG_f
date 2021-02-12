@@ -133,7 +133,7 @@ def main(params):
     train_loader, val_loader = loaders_from_dataset(
         dataset,
         configs['data'],
-        seed=seed,
+        seed=opts.random_seed,
         train_bs=configs['core'].batch_size,
         valid_bs=configs['hp'].validation_batch_size,
     )
