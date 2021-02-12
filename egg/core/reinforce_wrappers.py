@@ -313,6 +313,7 @@ class RnnSenderReinforce(nn.Module):
         sequence = []
         logits = []
         entropy = []
+        full_logits = []
         for step in range(self.max_len):
             for i, layer in enumerate(self.cells):
                 if isinstance(layer, nn.LSTMCell):
@@ -323,6 +324,7 @@ class RnnSenderReinforce(nn.Module):
                 prev_hidden[i] = h_t
                 input = h_t
             step_logits = F.log_softmax(self.hidden_to_output(h_t), dim=1)
+            full_logits.append(step_logits)
             distr = Categorical(logits=step_logits)
             #  entropy.append(distr.entropy())
             entropy.append(Categorical(logits=step_logits[:, 1:]).entropy())
@@ -349,14 +351,17 @@ class RnnSenderReinforce(nn.Module):
         sequence = torch.stack(sequence).permute(1, 0)
         logits = torch.stack(logits).permute(1, 0)
         entropy = torch.stack(entropy).permute(1, 0)
+        full_logits = torch.stack(full_logits).permute(1, 0, 2)
 
         zeros = torch.zeros((sequence.size(0), 1)).to(sequence.device)
 
         sequence = torch.cat([sequence, zeros.long()], dim=1)
         logits = torch.cat([logits, zeros], dim=1)
         entropy = torch.cat([entropy, zeros], dim=1)
+        zeros_expanded = zeros.unsqueeze(2).expand(-1, -1, full_logits.size(2))
+        full_logits = torch.cat([full_logits, zeros_expanded], dim=1)
 
-        return sequence, logits, entropy
+        return sequence, logits, entropy, full_logits
 
 
 class RnnReceiverReinforce(nn.Module):
@@ -466,6 +471,7 @@ class SenderReceiverRnnReinforce(nn.Module):
         receiver: nn.Module,
         loss: Callable,
         sender_entropy_coeff: float = 0.0,
+        sender_marginal_entropy_coeff: float = 0.0,
         receiver_entropy_coeff: float = 0.0,
         length_cost: float = 0.0,
         baseline_type: Baseline = MeanBaseline,
@@ -498,6 +504,7 @@ class SenderReceiverRnnReinforce(nn.Module):
         self.sender = sender
         self.receiver = receiver
         self.sender_entropy_coeff = sender_entropy_coeff
+        self.sender_marginal_entropy_coeff = sender_marginal_entropy_coeff
         self.receiver_entropy_coeff = receiver_entropy_coeff
         self.loss = loss
         self.length_cost = length_cost
@@ -525,7 +532,7 @@ class SenderReceiverRnnReinforce(nn.Module):
 
 
     def forward(self, sender_input, labels, receiver_input=None):
-        message, log_prob_s, entropy_s = self.sender(sender_input)
+        message, log_prob_s, entropy_s, logits_s = self.sender(sender_input)
         message_length = find_lengths(message)
         receiver_output, log_prob_r, entropy_r = self.receiver(
             message, receiver_input, message_length
@@ -543,18 +550,35 @@ class SenderReceiverRnnReinforce(nn.Module):
         # the log prob of the choices made by S before and including the eos symbol - again, we don't
         # care about the rest
         effective_log_prob_s = torch.zeros_like(log_prob_r)
-
+        # the marginal probability of the words is the probability distribution
+        # of the words, NOT including the probability of EOS.
+        # maximizing this entropy could be more useful than maximizing the
+        # entropy of the conditional: we don't want to increase uncertainty of
+        # the sender at each timestep, we want to broaden its coverage of
+        # vocabulary.
+        unnorm_marginal_prob_s = torch.zeros_like(logits_s[0, 0, 1:])
         for i in range(message.size(1)):  # until max len
             not_eosed = (i < message_length).float()
             effective_entropy_s += entropy_s[:, i] * not_eosed
             effective_log_prob_s += log_prob_s[:, i] * not_eosed
+            # we have to renormalize, to exclude the EOS token!
+            norm_conditional_prob_s = (F.softmax(logits_s[:, i, 1:], dim=1) *
+                not_eosed.unsqueeze(-1))
+            unnorm_marginal_prob_s += norm_conditional_prob_s.sum(0)
+        marginal_prob_s = unnorm_marginal_prob_s / (message_length).sum()
+        one = torch.tensor([1.]).to(marginal_prob_s.device)
+        assert(torch.allclose(marginal_prob_s.sum(), one))
+        marginal_entropy_s = Categorical(marginal_prob_s).entropy()
+        # TODO: shouldn't we divide by message_length - 1 there too?
         effective_entropy_s = effective_entropy_s / message_length.float()
 
         weighted_entropy = (
             effective_entropy_s.mean() * self.sender_entropy_coeff
             + entropy_r.mean() * self.receiver_entropy_coeff
         )
-
+        weighted_marginal_entropy = (
+            self.sender_marginal_entropy_coeff * marginal_entropy_s
+        )
         log_prob = effective_log_prob_s + log_prob_r
 
         if self.log_length:
@@ -575,7 +599,10 @@ class SenderReceiverRnnReinforce(nn.Module):
             (loss.detach() - self.baselines["loss"].predict(loss.detach())) * log_prob
         ).mean()
 
-        optimized_loss = policy_length_loss + policy_loss - weighted_entropy
+        optimized_loss = (
+            policy_length_loss + policy_loss - weighted_entropy -
+            weighted_marginal_entropy
+        )
         # if the receiver is deterministic/differentiable, we apply the actual loss
         optimized_loss += loss.mean()
         # optimized_loss uses baselines! same gradient but incomparable values!
@@ -588,6 +615,7 @@ class SenderReceiverRnnReinforce(nn.Module):
             self.baselines["length"].update(length_loss)
 
         aux_info["sender_entropy"] = entropy_s.detach()
+        aux_info["sender_marg_entropy"] = marginal_entropy_s.detach()
         aux_info["receiver_entropy"] = entropy_r.detach()
         aux_info["length"] = message_length.float()  # will be averaged
 

@@ -105,6 +105,7 @@ class Hyperparameters(Serializable):
     length_coef_epoch: int = 0  # if n > 0, increment by 0.01 every n epochs
     log_length: bool = False
     sender_entropy_coef: float = 0.
+    sender_marg_entropy_coef: float = 0.
     lstm_hidden: int = 30  
     sender_type: str = 'simple'  # 'simple' or 'tfm'
     receiver_type: str = 'simple' # 'simple' or 'att'
@@ -192,7 +193,6 @@ class DiscriReceiverEmbed(nn.Module):
         return dots
 
 def create_encoder(
-    core_params: EGGParameters,
     data: Data.Config,
     hp: Hyperparameters,
 ):
@@ -234,7 +234,7 @@ def create_game(
     hp: Hyperparameters,
     loss,
 ):
-    sender, sender_embedder = create_encoder(core_params, data, hp)
+    sender, sender_embedder = create_encoder(data, hp)
 
     sender = core.RnnSenderReinforce( 
         sender,
@@ -289,6 +289,7 @@ def create_game(
         receiver,
         loss,
         sender_entropy_coeff=hp.sender_entropy_coef,
+        sender_marginal_entropy_coeff=hp.sender_marg_entropy_coef,
         receiver_entropy_coeff=0.,
         length_cost=hp.length_coef,
         log_length=hp.log_length,

@@ -123,6 +123,7 @@ class Checkpoint(NamedTuple):
     epoch: int
     model_state_dict: Dict[str, Any]
     optimizer_state_dict: Dict[str, Any]
+    rng_state: torch.Tensor
 
 
 class CheckpointSaver(Callback):
@@ -167,6 +168,7 @@ class CheckpointSaver(Callback):
             epoch=self.epoch_counter,
             model_state_dict=self.trainer.game.state_dict(),
             optimizer_state_dict=self.trainer.optimizer.state_dict(),
+            rng_state=torch.get_rng_state(),
         )
 
 

@@ -10,6 +10,7 @@ import numpy as np
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
+from torch.utils.data import DataLoader
 from itertools import chain, combinations, product
 
 def powerset(iterable):
@@ -221,3 +222,30 @@ class Data(Dataset):
             return (padded_inputs, tgt_index, padded_outputs, n_necessary_features)
         else:
             return (padded_inputs, tgt_index, padded_outputs)
+
+def loaders_from_dataset(dataset, config_data, seed, train_bs, valid_bs):
+    N = config_data.n_examples
+    train_size = int(N * (3/5))
+    val_size = int(N * (1/5))
+    test_size = N - train_size - val_size
+    n_combinations = dataset.n_combinations()
+    # TODO: I don't really like the fact that some n_combinations can be really
+    # small. There can still be many datapoints, though, because a datapoint is
+    # defifned by a combination of a target and distractors. But still, maybe
+    # we should use non-overlapping sets of targets in train, valid and test?
+    print("#combinations={}".format(n_combinations))
+    torch.manual_seed(seed)
+    train_ds, val_ds, test_ds = torch.utils.data.random_split(
+        dataset,
+        [train_size, val_size, test_size],
+    )
+    train_loader = DataLoader(train_ds, batch_size=train_bs,
+            shuffle=True, num_workers=1, collate_fn=Data.collater,
+            drop_last=True,
+    )
+    val_loader = DataLoader(val_ds, batch_size=valid_bs,
+            shuffle=False, num_workers=1, collate_fn=Data.collater,
+            drop_last=True,
+    )
+    return train_loader, val_loader
+
