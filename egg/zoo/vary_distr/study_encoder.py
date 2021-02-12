@@ -90,7 +90,7 @@ def main(params):
             drop_last=True,
     )
 
-    model = Predictor(core_params, opts.data, opts.hp)
+    model = Predictor(opts.data, opts.hp)
     for n, p in model.named_parameters():
         print("{}: {} @ {}".format(n, p.size(), p.data_ptr()))
     params = list(model.parameters())
@@ -126,9 +126,9 @@ def main(params):
 
 
 class Predictor(nn.Module):
-    def __init__(self, core_params, data_params, hp):
+    def __init__(self, data_params, hp):
         super().__init__()
-        self.encoder, _ = create_encoder(core_params, data_params, hp)
+        self.encoder, _ = create_encoder(data_params, hp)
         self.predictor = nn.Sequential(
             nn.Linear(hp.lstm_hidden, hp.lstm_hidden*2),
             nn.ReLU(),

@@ -2,6 +2,9 @@ from dataclasses import dataclass, field
 from simple_parsing.helpers import Serializable
 from typing import List
 import os
+import json
+from types import SimpleNamespace
+
 
 
 def represent_list_as_str(l):
@@ -70,4 +73,16 @@ def save_configs(configs, exp_dir):
         full_config_fn = os.path.join(exp_dir, config_name + '.json')
         config.save(path=full_config_fn)
 
+def load_configs(exp_dir):
+    if not os.path.exists(exp_dir):
+        raise ValueError("Missing directory {}".format(exp_dir))
 
+    def read_json(filename):
+        with open(os.path.join(exp_dir, filename), 'r') as f:
+            return json.load(f, object_hook=lambda d: SimpleNamespace(**d))
+
+    return {
+       'data': read_json('data.json'),
+       'hp': read_json('hp.json'),
+       'core': read_json('core.json'),
+    }   

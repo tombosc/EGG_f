@@ -1,5 +1,8 @@
 from functools import reduce
 import operator
+import torch
+import random
+import numpy as np
 
 def prod(iterable):  # python3.7
     return reduce(operator.mul, iterable, 1)
@@ -7,6 +10,20 @@ def prod(iterable):  # python3.7
 def count_params(params):
     S = 0
     for p in params:
-        print(p.size())
         S += prod(p.size())
     return S
+
+def set_seed(seed):
+    """
+    Seeds the RNG in python.random, torch {cpu/cuda}, numpy.
+    :param seed: Random seed to be used
+
+    Public copy of core.utils, I don't want to interfere in the core.
+    """
+    random.seed(seed)
+    torch.manual_seed(seed)
+    np.random.seed(seed)
+    if torch.cuda.is_available():
+        torch.cuda.manual_seed_all(seed)
+        torch.backends.cudnn.deterministic = True
+        torch.backends.cudnn.benchmark = False

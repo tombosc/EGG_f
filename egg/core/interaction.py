@@ -129,6 +129,8 @@ class Interaction:
                     "Appending empty and non-empty interactions logs. "
                     "Normally this shouldn't happen!"
                 )
+            if lst[0].ndim == 0:
+                return torch.stack(lst, dim=0)
             if not variable_size:
                 return torch.cat(lst, dim=0)
             else:

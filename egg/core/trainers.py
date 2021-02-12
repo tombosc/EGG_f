@@ -292,6 +292,7 @@ class Trainer:
         self.game.load_state_dict(checkpoint.model_state_dict)
         self.optimizer.load_state_dict(checkpoint.optimizer_state_dict)
         self.start_epoch = checkpoint.epoch
+        torch.set_rng_state(checkpoint.rng_state)
 
     def load_from_checkpoint(self, path):
         """
