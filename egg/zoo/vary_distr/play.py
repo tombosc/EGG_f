@@ -4,7 +4,6 @@
 # LICENSE file in the root directory of this source tree.
 
 import argparse
-from math import prod
 import os
 
 import torch
@@ -23,6 +22,7 @@ from egg.zoo.vary_distr.data_readers import Data
 from egg.zoo.vary_distr.architectures import (
     Hyperparameters, EGGParameters, create_game,
 )
+from egg.zoo.vary_distr.utils import count_params
 
 from .config import compute_exp_dir, save_configs
 from .callbacks import InteractionSaver, FileJsonLogger, LRScheduler
@@ -135,27 +135,14 @@ def main(params):
         [train_size, val_size, test_size],
     )
 
-    def collater(list_tensors):
-        inputs = [e[0] for e in list_tensors]
-        tgt_index = torch.cat([e[1] for e in list_tensors])
-        outputs = [e[2] for e in list_tensors]
-        # TODO need to pad to the max ALWAYS
-        padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
-        padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
-        return (padded_inputs, tgt_index, padded_outputs)
-
     train_loader = DataLoader(train_ds, batch_size=opts.batch_size,
-            shuffle=True, num_workers=1, collate_fn=collater,
+            shuffle=True, num_workers=1, collate_fn=Data.collater,
             drop_last=True,
     )
     val_loader = DataLoader(val_ds, batch_size=opts.hp.validation_batch_size,
-            shuffle=False, num_workers=1, collate_fn=collater,
+            shuffle=False, num_workers=1, collate_fn=Data.collater,
             drop_last=True,
     )
-    n_features = dataset.get_n_features()
-    embed_dim = opts.hp.embed_dim
-    n_features = opts.data.n_features
-    max_value = opts.data.max_value
 
     def loss(_sender_input, _message, _receiver_input, receiver_output, labels):
         #  print("sizes msg={}, receiver_in={}, receiv_out={}, lbl={}".format(
@@ -178,17 +165,9 @@ def main(params):
     #  train_params = params_no_emb
     train_params = params
 
-    def n_params(params):
-        S = 0
-        for p in params:
-            print(p.size())
-            S += prod(p.size())
-        return S
-
-    print("#train_params={}".format(n_params(train_params)))
-
-    optimizer = core.build_optimizer(params)
-
+    print("#train_params={}".format(count_params(train_params)))
+    optimizer = core.build_optimizer(train_params)
+    #  embed_dim = opts.hp.embed_dim
     #  optimizer = get_std_opt(params, opts.hp.embed_dim)
 
     callbacks = []
