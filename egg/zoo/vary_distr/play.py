@@ -25,7 +25,8 @@ from egg.zoo.vary_distr.architectures import (
 from egg.zoo.vary_distr.utils import count_params
 
 from .config import compute_exp_dir, save_configs
-from .callbacks import InteractionSaver, FileJsonLogger, LRScheduler
+from .callbacks import (InteractionSaver, FileJsonLogger, LRScheduler,
+    CoefScheduler)
 
 
 # Copied from "the annotated transformer"
@@ -190,6 +191,17 @@ def main(params):
         raise NotImplementedError()
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1.0, gamma=0.95)
         callbacks.append(LRScheduler(scheduler))
+
+    if opts.hp.length_coef_epoch > 0:
+        sched = CoefScheduler(
+            get_coef_fn=game.get_length_cost,
+            set_coef_fn=game.set_length_cost,
+            init_value=0,
+            inc=0.01,
+            every_n_epochs=opts.hp.length_coef_epoch,
+            final_value=opts.hp.length_coef,
+        )
+        callbacks.append(sched)
 
     grad_norm = opts.hp.grad_norm if opts.hp.grad_norm > 0 else None
 

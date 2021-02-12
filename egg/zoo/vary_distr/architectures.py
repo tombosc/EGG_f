@@ -102,6 +102,7 @@ class Hyperparameters(Serializable):
     embed_dim: int = 30
     validation_batch_size: int = 0
     length_coef: float = 0.
+    length_coef_epoch: int = 0  # if n > 0, increment by 0.01 every n epochs
     log_length: bool = False
     sender_entropy_coef: float = 0.
     lstm_hidden: int = 30  

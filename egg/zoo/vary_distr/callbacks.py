@@ -29,6 +29,21 @@ class LRScheduler(Callback):
     def on_test_end(self, loss: float, logs: Interaction, epoch: int):
         self.scheduler.step()
 
+class CoefScheduler(Callback):
+    def __init__(self, get_coef_fn, set_coef_fn, init_value, inc, every_n_epochs, final_value):
+        self.get_coef_fn = get_coef_fn
+        self.set_coef_fn = set_coef_fn
+        self.inc = inc
+        self.final_value = final_value
+        self.every_n_epochs = every_n_epochs
+        self.set_coef_fn(init_value)
+
+    def on_test_end(self, loss: float, logs: Interaction, epoch: int):
+        if epoch and (epoch % self.every_n_epochs == 0):
+            val = self.get_coef_fn()
+            next_val = min(self.final_value, val + self.inc)
+            self.set_coef_fn(next_val)
+
 class FileJsonLogger(Callback):
     def __init__(self, exp_dir, filename, print_train_loss=False):
         self.print_train_loss = print_train_loss
