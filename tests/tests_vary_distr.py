@@ -19,40 +19,11 @@ def run_game(game, params):
 
     #  sys.std_out = old_stdout
 
-data_example = b"""5 3
-1 0 0 0 2 . 1 0 1 0 1 . 1
-1 0 1 1 0 . 2 2 1 0 0 . 0 1 2 0 2 . 0
-1 0 1 1 0 . 2 2 1 0 0 . 0 1 2 0 2 . 0 1 2 0 2 . 3
-1 0 0 0 2 . 1 0 1 0 1 . 1"""
-
-def test_game():
-    with tempfile.NamedTemporaryFile() as f:
-        f.write(data_example)
-        f.seek(0) 
-        run_game(
-            "egg.zoo.vary_distr.play",
-            dict(vocab_size=3, n_epoch=1, max_len=2),
-        )
-
-
-# TODO do we really need Data? Or GeneratedData is enough
-#  def test_data():
-#      data = Data.from_str(data_example, one_hot=False)
-#      sender_input, label, receiver_input = data[0]
-#      print("sender_input: {}\n, labels: {}\n, receiver: {}\n".format(
-#          sender_input, label, receiver_input,
-#      ))
-#      for sender_input, label, receiver_input in data:
-#          print("Y")
-#          assert(torch.all(sender_input[0] == receiver_input[label]))
-#      assert(data.get_n_features() == 5)
-#  assert(False)
-
 def test_data_generation():
     c = Data.Config(
         n_examples = 29,
         max_value = 6,
-        n_features = 11,
+        n_features = 3,
         min_distractors = 1,
         max_distractors = 10,
         seed = 47
@@ -100,9 +71,9 @@ def test_n_necessary_features():
 def test_count_necess():
     c = Data.Config(
         n_examples = 1000,
-        max_value = 2,
-        n_features = 4,
-        min_distractors = 1,
+        max_value = 5, 
+        n_features = 3,
+        min_distractors = 2,
         max_distractors = 10,
         seed = 2
     )
@@ -110,6 +81,7 @@ def test_count_necess():
     counts = Counter()
     for i in range(1000):
         sender_input = data[i][0].unsqueeze(0)
+        #  print(sender_input)
         counts[Data.n_necessary_features(sender_input).item()] += 1
     print(counts)
 

@@ -46,7 +46,7 @@ class Data(Dataset):
         min_distractors: int = 1
         max_distractors: int = 4
         max_value: int = 4
-        n_features: int = 5
+        n_features: int = 3
  
     def __init__(self, config, necessary_features=False):
         c = config
