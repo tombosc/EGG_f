@@ -36,9 +36,10 @@ if __name__ == "__main__":
     logs = os.path.join(exps_root, args.exp_dir, 'logs.txt')
     test_results = last_epoch_performance(logs)
     acc = test_results['acc']
-    H = test_results['sender_entropy']
+    cond_H = test_results['sender_entropy']
+    marg_H = test_results['sender_marg_entropy']
     print(args.exp_dir)
     if acc > 0.9:
-        print("Acc={:.3},H={:.3}".format(acc, H))
+        print("Acc={:.3},cond_H={:.3},marg_H={:.3}".format(acc, cond_H, marg_H))
         results = os.path.join(exps_root, args.exp_dir, args.file_name)
         print_lengths(results)

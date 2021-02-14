@@ -127,7 +127,7 @@ def main(params):
     if os.path.exists(exp_dir):
         raise ValueError("Dir already exists: {}".format(exp_dir))
     opts.checkpoint_dir = exp_dir
-    opts.checkpoint_freq = cp_every_n_epochs
+    opts.checkpoint_freq = 100
     save_configs(configs, exp_dir)
 
     train_loader, val_loader = loaders_from_dataset(

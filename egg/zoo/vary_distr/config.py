@@ -28,7 +28,8 @@ def represent_dict_as_str(d):
         'test': 'ts', 'output': 'out', 'linear': 'lin', 'embeddings': 'E',
         'embed': 'E', 'dim': 'd', 'improvement': 'imp', 'precision': 'prc',
         'frozen': 'frz', 'target': 'tgt', 'format': 'fmt', 'l2_loss_coef':
-        'l2', 'standardize': 'std', 'epochs': 'ep', 'loss': 'L', 'name': '',
+        'l2', 'standardize': 'std', 'epochs': 'ep', 'epoch': 'ep', 'loss': 'L', 'name': '',
+        'heads': 'H', 'head': 'H', 'layers': 'lay', 
         'distractors': 'dis', 'min': 'm', 'max': 'M', 
         'vocab': 'V', 'size': 'sz',
     }
