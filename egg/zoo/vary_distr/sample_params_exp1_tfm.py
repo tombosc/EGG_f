@@ -17,10 +17,11 @@ params = {
     'vocab_size': choice([20]),
     # 'sender_entropy_coef': choice([0.05, 0.1, 0.2, 0.3]),
     # 'length_coef': choiCE([0.05, 0.1, 0.2, 0.3]),
-    'length_coef': choice([1e-4, 1e-3, 1e-2, 1e-1]),
-    'length_coef_epoch': choice([0, 100]),
-    'sender_entropy_coef': choice([0, 1e-3, 1e-2, 1e-1]),
-    'lstm_hidden': choice([20, 30, 40]),
+    'length_coef': choice([1e-2, 3e-2, 1e-1, 3e-1]),
+    'length_coef_epoch': choice([100]),
+    'sender_entropy_coef': choice([0]),  # deprecated!
+    'sender_marg_entropy_coef': choice([1e-5,1e-4,1e-3,1e-2]),
+    'lstm_hidden': choice([30, 40]),
     'min_distractors': choice([1]),
     'max_distractors': choice([5]),
     'n_features': choice([3]),
@@ -32,7 +33,7 @@ params = {
     'n_layers': choice([2]),
     'n_examples': 1024*5,
     'embedder': 'cat',
-    'C': 'fixH',
+    'C': 'MH',
 }
 
 if __name__ == "__main__":
