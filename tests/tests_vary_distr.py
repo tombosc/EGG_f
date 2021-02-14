@@ -5,8 +5,11 @@ import pathlib
 import shutil
 import sys
 import torch
+import numpy as np
 from egg.zoo.vary_distr.data_readers import Data
 from collections import Counter
+from egg.zoo.vary_distr.utils import shuffle_message, dedup_message
+from egg.core.util import find_lengths
 
 
 def run_game(game, params):
@@ -85,3 +88,43 @@ def test_count_necess():
         counts[Data.n_necessary_features(sender_input).item()] += 1
     print(counts)
 
+def test_shuffle_message():
+    message = torch.tensor(
+        [[1, 2, 3, 0],
+         [1, 2, 3, 4],
+         [1, 0, 0, 0],
+         [1, 2, 0, 0]]
+    )
+    zero_mask = (message == 0)
+    lengths = find_lengths(message)
+    rng = np.random.default_rng()
+    shuffled = shuffle_message(message, lengths, rng)
+    assert(torch.all(zero_mask == (shuffled == 0)))
+    for i, pack in enumerate(zip(lengths, shuffled)):
+        length, row = pack
+        length = length.item()
+        if not(length == message.size(1) and row[length-1].item() != 0):
+            # this ugly mess is because length == L can mean that the last
+            # element of the row is 0... or there is no 0 in the row!
+            # TODO see if I can change that without out of bounds accesses
+            length = length - 1
+        unique_shuffled = set(row[:length].unique().tolist())
+        print(unique_shuffled)
+        unique_orig = set(message[i, :length].unique().tolist())
+        assert(unique_shuffled == unique_orig)
+        assert(torch.all(row[length:] == 0))
+
+def test_dedup_message():
+    message = torch.tensor(
+        [[1, 1, 5, 5, 5, 2, 2, 2, 2, 0, 0],
+         [1, 2, 2, 5, 2, 5, 5, 0, 2, 2, 0],
+         [1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0]],
+    )
+    lengths = find_lengths(message)
+    deduped = dedup_message(message, lengths)
+    deduped_ground_truth = torch.tensor(
+        [[1, 5, 2, 0, 0, 0, 0, 0, 0, 0, 0],
+         [1, 2, 5, 2, 5, 0, 0, 0, 0, 0, 0],
+         [1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0]],
+    )
+    assert(torch.all(deduped == deduped_ground_truth))
