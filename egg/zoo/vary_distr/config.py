@@ -1,4 +1,7 @@
 from dataclasses import dataclass, field
+from .data_readers import Data
+from .architectures import Hyperparameters, EGGParameters
+
 from simple_parsing.helpers import Serializable
 from typing import List
 import os
@@ -21,8 +24,8 @@ def represent_dict_as_str(d):
     to shorten the representation.
     """
     abbreviations = {
-        'validation': 'val', 'batch_size': 'bs', 'length': 'len',
-        'coef': 'C', 'entropy': 'H', 'sender': 'sendr', 'receiver': 'recv',
+        'validation': 'val', 'value': 'v', 'batch_size': 'bs', 'length': 'len',
+        'coef': 'C', 'entropy': 'H', 'sender': 'Sdr', 'receiver': 'Rcv',
         'hidden': 'hid', 'examples': 'ex', 'features': 'ft', 
         'seed': 'sd', 'optimizer': 'O', 'pretrained': 'pre', 'train': 'tr',
         'test': 'ts', 'output': 'out', 'linear': 'lin', 'embeddings': 'E',
@@ -32,6 +35,8 @@ def represent_dict_as_str(d):
         'heads': 'H', 'head': 'H', 'layers': 'lay', 
         'distractors': 'dis', 'min': 'm', 'max': 'M', 
         'vocab': 'V', 'size': 'sz',
+        'retrain_receiver_shuffled': 'RSh',
+        'retrain_receiver_deduped': 'RDe',
     }
     val = {'True': 'T', 'False': 'F'}
     s = ''
@@ -78,12 +83,20 @@ def load_configs(exp_dir):
     if not os.path.exists(exp_dir):
         raise ValueError("Missing directory {}".format(exp_dir))
 
-    def read_json(filename):
-        with open(os.path.join(exp_dir, filename), 'r') as f:
-            return json.load(f, object_hook=lambda d: SimpleNamespace(**d))
+    #  def read_json(filename):
+    #      with open(os.path.join(exp_dir, filename), 'r') as f:
+    #          return json.load(f, object_hook=lambda d: SimpleNamespace(**d))
+
+    #  return {
+    #     'data': read_json('data.json'),
+    #     'hp': read_json('hp.json'),
+    #     'core': read_json('core.json'),
+    #  }
+    def path_to(filename):
+        return os.path.join(exp_dir, filename)
 
     return {
-       'data': read_json('data.json'),
-       'hp': read_json('hp.json'),
-       'core': read_json('core.json'),
-    }   
+       'data': Data.Config.load(path_to("data.json")),
+       'hp': Hyperparameters.load(path_to("hp.json")),
+       'core': EGGParameters.load(path_to("core.json")),
+    }

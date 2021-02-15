@@ -361,3 +361,44 @@ def find_lengths(messages: torch.Tensor) -> torch.Tensor:
     lengths.add_(1).clamp_(max=max_k)
 
     return lengths
+
+
+def shuffle_message(message, lengths):
+    """ Shuffle the words in message.
+
+    message is a batch_size x length tensor. All the tokens after the first eos
+    token (a 0) are ignored, all those strictly before are shuffled.
+    """
+    bs, L = message.size()
+    shuffled = torch.zeros_like(message)
+    for i, pack in enumerate(zip(message, lengths)):
+        row, length = pack
+        length = length.item()
+        if not(length == L and row[length-1].item() != 0):
+            # this ugly mess is because length == L can mean that the last
+            # element of the row is 0... or there is no 0 in the row!
+            # TODO see if I can change that without out of bounds accesses
+            length = length - 1
+        permutation = torch.randperm(length)
+        shuffled[i, :length] = row[:length][permutation]
+    return shuffled
+
+
+def dedup_message(message, lengths):
+    """ Deduplicate the words in message.
+
+    message is a batch_size x length tensor. All the tokens after the first eos
+    token (a 0) are zeroed, all those strictly before are deduplicated.
+    """
+    bs, L = message.size()
+    deduped = torch.zeros_like(message)
+    for i, pack in enumerate(zip(message, lengths)):
+        row, length = pack
+        length = length.item()
+        deduped[i, 0] = row[0]
+        k = 1
+        for j in range(1, length):
+            if row[j] != deduped[i, k-1]:
+                deduped[i, k] = row[j]
+                k += 1
+    return deduped

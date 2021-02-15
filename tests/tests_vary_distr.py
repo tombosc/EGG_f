@@ -8,8 +8,7 @@ import torch
 import numpy as np
 from egg.zoo.vary_distr.data_readers import Data
 from collections import Counter
-from egg.zoo.vary_distr.utils import shuffle_message, dedup_message
-from egg.core.util import find_lengths
+from egg.core.util import find_lengths, shuffle_message, dedup_message
 
 
 def run_game(game, params):
@@ -20,7 +19,6 @@ def run_game(game, params):
     params_as_list = [f"--{k}={v}" for k, v in params.items()]
     game.main(params_as_list)
 
-    #  sys.std_out = old_stdout
 
 def test_data_generation():
     c = Data.Config(
@@ -40,6 +38,21 @@ def test_data_generation():
         # most important test: whether the target is well-positionned
         assert(torch.all(sender_input[0] == receiver_input[label]))
     assert(data.get_n_features() == c.n_features)
+
+def test_determinism():
+    c = Data.Config(
+        n_examples = 5,
+        max_value = 4,
+        n_features = 3,
+        min_distractors = 1,
+        max_distractors = 7,
+        seed = 32
+    )
+    data = Data(c)
+    data2 = Data(c)
+    assert(torch.all(data[0][0] == data2[0][0]))
+    assert(torch.all(data[0][1] == data2[0][1]))
+    assert(torch.all(data[1][0] == data2[1][0]))
 
 def test_n_necessary_features():
     inp = torch.tensor([
@@ -98,7 +111,7 @@ def test_shuffle_message():
     zero_mask = (message == 0)
     lengths = find_lengths(message)
     rng = np.random.default_rng()
-    shuffled = shuffle_message(message, lengths, rng)
+    shuffled = shuffle_message(message, lengths)
     assert(torch.all(zero_mask == (shuffled == 0)))
     for i, pack in enumerate(zip(lengths, shuffled)):
         length, row = pack

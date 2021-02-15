@@ -16,7 +16,7 @@ from .baselines import Baseline, MeanBaseline
 from .interaction import LoggingStrategy
 from .rnn import RnnEncoder
 from .transformer import TransformerDecoder, TransformerEncoder
-from .util import find_lengths
+from .util import find_lengths, shuffle_message, dedup_message
 
 
 class ReinforceWrapper(nn.Module):
@@ -478,6 +478,8 @@ class SenderReceiverRnnReinforce(nn.Module):
         train_logging_strategy: LoggingStrategy = None,
         test_logging_strategy: LoggingStrategy = None,
         log_length: bool = False,
+        shuffle_message: bool = False,
+        dedup_message: bool = False,
     ):
         """
         :param sender: sender agent
@@ -509,6 +511,9 @@ class SenderReceiverRnnReinforce(nn.Module):
         self.loss = loss
         self.length_cost = length_cost
         self.log_length = log_length
+        assert(not (shuffle_message and dedup_message))
+        self.shuffle_message = shuffle_message
+        self.dedup_message = dedup_message
 
         self.baselines = defaultdict(baseline_type)
         self.train_logging_strategy = (
@@ -534,6 +539,12 @@ class SenderReceiverRnnReinforce(nn.Module):
     def forward(self, sender_input, labels, receiver_input=None):
         message, log_prob_s, entropy_s, logits_s = self.sender(sender_input)
         message_length = find_lengths(message)
+        if self.shuffle_message:
+            message = shuffle_message(message, message_length)
+        elif self.dedup_message:
+            message = dedup_message(message, message_length)
+            message_length = find_lengths(message)
+
         receiver_output, log_prob_r, entropy_r = self.receiver(
             message, receiver_input, message_length
         )

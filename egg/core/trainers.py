@@ -50,6 +50,7 @@ class Trainer:
         callbacks: Optional[List[Callback]] = None,
         grad_norm: float = None,
         aggregate_interaction_logs: bool = True,
+        ignore_optimizer_state: bool = False,
     ):
         """
         :param game: A nn.Module that implements forward(); it is expected that forward returns a tuple of (loss, d),
@@ -81,7 +82,7 @@ class Trainer:
             print(
                 f"# Initializing model, trainer, and optimizer from {common_opts.load_from_checkpoint}"
             )
-            self.load_from_checkpoint(common_opts.load_from_checkpoint)
+            self.load_from_checkpoint(common_opts.load_from_checkpoint, ignore_optimizer_state)
 
         self.distributed_context = common_opts.distributed_context
         if self.distributed_context.is_distributed:
@@ -288,20 +289,21 @@ class Trainer:
         for callback in self.callbacks:
             callback.on_train_end()
 
-    def load(self, checkpoint: Checkpoint):
+    def load(self, checkpoint: Checkpoint, ignore_optimizer_state=False):
         self.game.load_state_dict(checkpoint.model_state_dict)
-        self.optimizer.load_state_dict(checkpoint.optimizer_state_dict)
+        if not ignore_optimizer_state:
+            self.optimizer.load_state_dict(checkpoint.optimizer_state_dict)
         self.start_epoch = checkpoint.epoch
         torch.set_rng_state(checkpoint.rng_state)
 
-    def load_from_checkpoint(self, path):
+    def load_from_checkpoint(self, path, ignore_optimizer_state=False):
         """
         Loads the game, agents, and optimizer state from a file
         :param path: Path to the file
         """
         print(f"# loading trainer state from {path}")
         checkpoint = torch.load(path)
-        self.load(checkpoint)
+        self.load(checkpoint, ignore_optimizer_state)
 
     def load_from_latest(self, path):
         latest_file, latest_time = None, None

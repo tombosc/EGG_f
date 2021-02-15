@@ -117,7 +117,7 @@ class Hyperparameters(Serializable):
     grad_norm: float = 0
     C: str = ''  # a simple comment
     share_embed: bool = False
-
+    
     def __post_init__(self):
         assert(self.embed_dim > 0)
         assert(self.lstm_hidden > 0)
@@ -128,6 +128,13 @@ class Hyperparameters(Serializable):
             for u in ['n_heads', 'n_layers']:
                 del d[u]
         del d['validation_batch_size']
+        if d['grad_norm'] == 0:
+            del d['grad_norm']
+        if not d['log_length']:
+            del d['log_length']
+        if not d['share_embed']:
+            del d['share_embed']
+
         return d
 
 
@@ -233,6 +240,8 @@ def create_game(
     data: Data.Config,
     hp: Hyperparameters,
     loss,
+    shuffle_message=False,
+    dedup_message=False,
 ):
     sender, sender_embedder = create_encoder(data, hp)
 
@@ -294,6 +303,8 @@ def create_game(
         length_cost=hp.length_coef,
         log_length=hp.log_length,
         baseline_type=MeanBaseline,
+        shuffle_message=shuffle_message,
+        dedup_message=dedup_message,
     )
     return game
 
