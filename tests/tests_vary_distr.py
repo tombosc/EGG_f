@@ -166,8 +166,8 @@ def test_generate_funcs():
 
 def test_dd():
     c = DependentData.Config(
-        n_examples=500,
-            
+        seed=2,
+        n_examples=200,
     )
     data = DependentData(c)
     counts_n_nec = Counter()
@@ -184,6 +184,7 @@ def test_dd():
         n_nec = n_nec.item()
         counts_n_nec[n_nec] += 1
         counts_combin[tuple(features)] += 1
+        assert(data.n_distractors(sender_input) > 0)
     S = sum([v for _, v in counts_n_nec.items()])
     print({c: v/S for c, v in counts_n_nec.items()})
     print(counts_combin)

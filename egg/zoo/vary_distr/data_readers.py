@@ -281,10 +281,10 @@ class DependentData():
             )
             conditionals.append(cond)
         for i in range(c.n_examples):
-            n_objects = self.min_distractors + scipy.stats.betabinom.rvs(
+            n_objects = 1 + self.min_distractors + scipy.stats.betabinom.rvs(
                 self.max_distractors - self.min_distractors,
                 0.5,
-                0.2,
+                0.3,
                 random_state=i, # can't pass the numpy rng... and can't get the
                 # rng's seed.
             )
