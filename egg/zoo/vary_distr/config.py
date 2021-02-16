@@ -37,6 +37,7 @@ def represent_dict_as_str(d):
         'vocab': 'V', 'size': 'sz',
         'retrain_receiver_shuffled': 'RSh',
         'retrain_receiver_deduped': 'RDe',
+        'patience': 'P',
     }
     val = {'True': 'T', 'False': 'F'}
     s = ''

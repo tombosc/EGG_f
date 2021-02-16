@@ -6,7 +6,10 @@ import shutil
 import sys
 import torch
 import numpy as np
-from egg.zoo.vary_distr.data_readers import Data
+from egg.zoo.vary_distr.data_readers import (
+    Data, get_necessary_features,
+    DependentData, generate_quasi_diagonal, generate_sparse_normalized,
+)
 from collections import Counter
 from egg.core.util import find_lengths, shuffle_message, dedup_message
 
@@ -54,7 +57,7 @@ def test_determinism():
     assert(torch.all(data[0][1] == data2[0][1]))
     assert(torch.all(data[1][0] == data2[1][0]))
 
-def test_n_necessary_features():
+def test_get_necessary_features():
     inp = torch.tensor([
         [[1, 2, 1],
          [2, 2, 1],
@@ -64,7 +67,7 @@ def test_n_necessary_features():
          [1, 2, 2]],
 
     ])
-    n_necessary = Data.n_necessary_features(inp)
+    n_necessary, _ = get_necessary_features(inp)
     print(n_necessary)
     assert(n_necessary[0] == 1)
     assert(n_necessary[1] == 2)
@@ -72,17 +75,26 @@ def test_n_necessary_features():
         [[1, 2, 1, 3],
          [1, 2, 1, 2],
          [0, 0, 0, 0],
+         [0, 0, 0, 0],
+         [0, 0, 0, 0],
          [0, 0, 0, 0]],
         [[1, 2, 1, 3],
          [1, 2, 1, 2],
          [1, 2, 2, 3],
-         [3, 2, 1, 3]],
+         [3, 2, 1, 3],
+         [0, 0, 0, 0],
+         [0, 0, 0, 0]],
+        [[2, 3, 1, 3],
+         [2, 3, 3, 3],
+         [2, 3, 3, 1],
+         [2, 3, 3, 2],
+         [2, 2, 1, 4],
+         [2, 2, 1, 3]]
     ])
-    n_necessary = Data.n_necessary_features(inp)
+    n_necessary, _ = get_necessary_features(inp)
     assert(n_necessary[0] == 1)
     assert(n_necessary[1] == 3)
-    data = Data(Data.Config())
-    features, n_necessary_features = data.generate_example()
+    assert(n_necessary[2] == 2)
 
 def test_count_necess():
     c = Data.Config(
@@ -98,7 +110,7 @@ def test_count_necess():
     for i in range(1000):
         sender_input = data[i][0].unsqueeze(0)
         #  print(sender_input)
-        counts[Data.n_necessary_features(sender_input).item()] += 1
+        counts[get_necessary_features(sender_input)[0].item()] += 1
     print(counts)
 
 def test_shuffle_message():
@@ -141,3 +153,39 @@ def test_dedup_message():
          [1, 2, 3, 4, 5, 6, 0, 0, 0, 0, 0]],
     )
     assert(torch.all(deduped == deduped_ground_truth))
+
+
+def test_generate_funcs():
+    rng = np.random.default_rng()
+    n = rng.choice(10)
+    A = generate_quasi_diagonal(rng, n, alpha=0.2)
+    B = generate_sparse_normalized(rng, n, 0.3, 0.9)
+    for C in [A, B]:
+        assert(np.allclose(C.sum(1), 1))
+
+
+def test_dd():
+    c = DependentData.Config(
+        n_examples=500,
+            
+    )
+    data = DependentData(c)
+    counts_n_nec = Counter()
+    counts_combin = Counter()
+    assert(len(data) == c.n_examples)
+    for sender_input, label, receiver_input in data:
+        assert(torch.all(sender_input < c.max_value + 1))
+        assert(torch.all(0 <= sender_input))
+        assert(sender_input.size(1) == c.n_features)
+        # most important test: whether the target is well-positionned
+        assert(torch.all(sender_input[0] == receiver_input[label]))
+        sender_input = sender_input[np.newaxis, :, :]
+        n_nec, features = get_necessary_features(sender_input)
+        n_nec = n_nec.item()
+        counts_n_nec[n_nec] += 1
+        counts_combin[tuple(features)] += 1
+    S = sum([v for _, v in counts_n_nec.items()])
+    print({c: v/S for c, v in counts_n_nec.items()})
+    print(counts_combin)
+    assert(data.get_n_features() == c.n_features)
+

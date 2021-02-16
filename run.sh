@@ -1,4 +1,11 @@
-python -m egg.zoo.vary_distr.play --print_validation_events --batch_size=256 --random_seed=1 --max_len 5 --lr=0.001 --n_epochs=1500 --vocab_size 40 --sender_entropy_coef 0.0 --length_coef 0.0 --min_distractors 1 --max_distractors 5 --max_value 5 --n_features 3 --sender_type='tfm' --embed_dim 12 --n_layers 1 --n_heads 2 --log_length=False --lstm_hidden=30 --receiver_type='simple' --share_embed False -C "" --optimizer 'adam'
+python -m egg.zoo.vary_distr.play --print_validation_events \
+	--data 'dd' --data.seed=1 --min_distractors 1 --max_distractors 15 --max_value 5 --n_features 5 \
+	--batch_size=256  --lr=0.001 --n_epochs=2000 --optimizer 'adam'\
+	--vocab_size 20 --max_len 10 \
+	--sender_marg_entropy_coef 0.0 --length_coef 0.0 --log_length=False \
+	--hp.seed=1 --sender_type='tfm' --embed_dim 8 --n_layers 2 --n_heads 8 --lstm_hidden=30 --receiver_type='att' --share_embed False \
+	-C "" \
+	--no_cuda
 
 # example of command for re-training the receiver. Note that
 # * --random_seed can be different than the one used for initializing the

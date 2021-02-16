@@ -11,6 +11,7 @@ from .data_readers import Data
 from simple_parsing import Serializable
 import egg.core as core
 from egg.core.baselines import EMABaseline, MeanBaseline
+from .utils import set_torch_seed
 
 @dataclass
 class EGGParameters(Serializable):
@@ -134,6 +135,8 @@ class Hyperparameters(Serializable):
             del d['log_length']
         if not d['share_embed']:
             del d['share_embed']
+        if d['C'] == '':
+            del d['C']
 
         return d
 
@@ -243,6 +246,9 @@ def create_game(
     shuffle_message=False,
     dedup_message=False,
 ):
+    """ Create all the modules.
+    """
+    set_torch_seed(hp.seed)
     sender, sender_embedder = create_encoder(data, hp)
 
     sender = core.RnnSenderReinforce( 
