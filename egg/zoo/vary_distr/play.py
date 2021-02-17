@@ -75,6 +75,10 @@ def get_config(params):
     if checkpoint_fn:
         configs['hp'].seed = args_2.hp.seed
         configs['retrain'] = args_2.retrain
+        # set global opts that are read by core.trainer
+        configs['core'].fill_namespace(args_2)
+        args_2.load_from_checkpoint = checkpoint_fn  # very important! has
+        #  already been parsed during phase 1, but core.init has its own.
     else:
         core_params = EGGParameters.from_argparse(args_2)
         configs = {  # order matters, must match that of load_configs

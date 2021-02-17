@@ -6,7 +6,7 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-from dataclasses import dataclass, fields
+from dataclasses import dataclass, fields, asdict
 from .data_readers import Data
 from simple_parsing import Serializable
 import egg.core as core
@@ -28,8 +28,11 @@ class EGGParameters(Serializable):
         """ Assumes that args is a namespace containing all the field names.
         """
         d = [getattr(args, f.name) for f in fields(cls)]
-        print(d)
         return cls(*d)
+
+    def fill_namespace(self, args):
+        for k, v in asdict(self).items():
+            setattr(args, k, v)
 
     def get_dict_dirname(self):
         d = self.__dict__.copy()
