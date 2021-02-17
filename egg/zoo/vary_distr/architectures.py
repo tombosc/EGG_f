@@ -140,6 +140,50 @@ class Hyperparameters(Serializable):
 
         return d
 
+ 
+@dataclass
+class GlobalParams(Serializable):
+    """ Parameters that should be parsed before other parameters are parsed,
+    because they define how they should be parsed/what to parse. 
+    Examples:
+   -  models can have different hyperparameters, so the model type should be
+    specified before.
+    - same for datasets.
+    """
+    data: str = 'id'  
+
+    def __post_init__(self):
+        assert(self.data in ['dd', 'id'])
+
+
+@dataclass
+class RetrainParams(Serializable):
+    """ Parameters that are only parsed when load_from_checkpoint is used.
+    """
+    retrain_receiver: bool = False
+    retrain_receiver_shuffled: bool = False
+    retrain_receiver_deduped: bool = False
+
+    def __post_init__(self):
+        a = self.retrain_receiver
+        b = self.retrain_receiver_shuffled
+        c = self.retrain_receiver_deduped
+        assert(not(a and b) and not(a and c) and not(b and c))
+
+    def get_dict_dirname(self):
+        d = self.__dict__.copy()
+        
+        def delete_or_replace(a, b):
+            if d[a] == False:
+                del d[a]
+            else:
+                d[b] = d[a]
+                del d[a]
+
+        delete_or_replace('retrain_receiver_shuffled', 'RSh')
+        delete_or_replace('retrain_receiver_deduped', 'RDe')
+        delete_or_replace('retrain_receiver', 'R')
+        return d
 
 class SimpleSender(nn.Module):
     """ Encode the first row of the matrix. 

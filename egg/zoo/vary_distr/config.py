@@ -1,6 +1,6 @@
 from dataclasses import dataclass, field
-from .data_readers import Data
-from .architectures import Hyperparameters, EGGParameters
+from .data_readers import Data, data_selector
+from .architectures import Hyperparameters, EGGParameters, GlobalParams
 
 from simple_parsing.helpers import Serializable
 from typing import List
@@ -95,9 +95,12 @@ def load_configs(exp_dir):
     #  }
     def path_to(filename):
         return os.path.join(exp_dir, filename)
-
+    global_params = GlobalParams.load(path_to("glob.json"))
+    data_cls = data_selector[global_params.data]
     return {
-       'data': Data.Config.load(path_to("data.json")),
+       'data': data_cls.Config.load(path_to("data.json")),
        'hp': Hyperparameters.load(path_to("hp.json")),
        'core': EGGParameters.load(path_to("core.json")),
+       'glob': global_params,
     }
+
