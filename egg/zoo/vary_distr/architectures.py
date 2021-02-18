@@ -204,9 +204,11 @@ class SimpleSender(nn.Module):
 class TransformerSender(nn.Module):
     """ Pragmatic: the target is "contextualized" before being encoded.
     """
-    def __init__(self, encoder, embed_dim, output_dim, ff_dim, max_objects, n_heads, n_layers):
+    def __init__(self, encoder, embed_dim, output_dim, ff_dim, max_objects,
+            n_heads, n_layers, encoder_side):
         super().__init__()
         self.encoder = encoder
+        self.encoder_side = encoder_side
         encoder_layer = nn.TransformerEncoderLayer(
                 d_model=embed_dim,
                 nhead=n_heads,
@@ -219,18 +221,25 @@ class TransformerSender(nn.Module):
             norm=layer_norm,
         )
         self.output = nn.Linear(embed_dim, output_dim)
+        self.output_dim = output_dim
         # target_embed will mark the target (the first row of sender_input)
         self.target_embed = nn.Parameter(torch.randn(1, 1, embed_dim))
 
-    def forward(self, x):
+    def forward(self, x, ret_first_row=False):
+        if ret_first_row:
+            raise ValueError("Unused parameter: hack")
         embedded, mask = self.encoder(x, ret_first_row=False)
-        embedded[:, 0] = embedded[:, 0] + self.target_embed
+        if self.encoder_side:
+            embedded[:, 0] = embedded[:, 0] + self.target_embed
         out = self.transformer_encoder(
             src=embedded.transpose(0, 1),
             src_key_padding_mask=mask,
         ).transpose(0, 1) # (bs, lmax, n_feat)
         out = self.output(out)
-        return out[:, 0]
+        if self.encoder_side:
+            return out[:, 0]
+        else:
+            return out, mask
 
 class DiscriReceiverEmbed(nn.Module):
     """ A basic discriminative receiver, like DiscriReceiver, but which expect
@@ -279,6 +288,7 @@ def create_encoder(
             max_objects = data.max_distractors + 1,
             n_heads=hp.n_heads,
             n_layers=hp.n_layers,
+            encoder_side=True,
         )
     else:
         raise ValueError()
@@ -343,6 +353,38 @@ def create_game(
                 n_max_objects=data.max_distractors,
                 vocab_size=core_params.vocab_size,
         )
+    elif hp.receiver_type == 'tfm':
+        if hp.embedder == 'cat':
+            in_dim = data.n_features * hp.embed_dim
+        elif hp.embedder == 'mean':
+            in_dim = hp.embed_dim
+
+        receiver_embedder = TransformerSender(
+            receiver_embedder,
+            embed_dim=in_dim,
+            output_dim=hp.lstm_hidden,
+            ff_dim=4*hp.embed_dim,
+            max_objects = data.max_distractors + 1,
+            n_heads=hp.n_heads,
+            n_layers=hp.n_layers,
+            encoder_side=False,
+        )
+        receiver = DiscriReceiverEmbed(
+            n_features=data.n_features,
+            input_dim=receiver_embedder.output_dim,
+            n_hidden=hp.lstm_hidden,
+            n_embeddings=data.max_value,
+            encoder=receiver_embedder,
+        )
+
+        receiver = core.RnnReceiverDeterministic(
+            receiver,
+            vocab_size=core_params.vocab_size,
+            embed_dim=hp.embed_dim,
+            hidden_size=hp.lstm_hidden,
+            cell='lstm',
+        )
+
     else:
         raise ValueError()
 

@@ -98,9 +98,9 @@ def load_configs(exp_dir):
     global_params = GlobalParams.load(path_to("glob.json"))
     data_cls = data_selector[global_params.data]
     return {
+       'glob': global_params,
        'data': data_cls.Config.load(path_to("data.json")),
        'hp': Hyperparameters.load(path_to("hp.json")),
        'core': EGGParameters.load(path_to("core.json")),
-       'glob': global_params,
     }
 

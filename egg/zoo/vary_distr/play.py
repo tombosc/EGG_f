@@ -82,10 +82,10 @@ def get_config(params):
     else:
         core_params = EGGParameters.from_argparse(args_2)
         configs = {  # order matters, must match that of load_configs
+            'glob': args_2.glob,
             'data': args_2.data,
             'hp': args_2.hp,
             'core': core_params,
-            'glob': args_2.glob,
         }
     return configs, data_cls, checkpoint_fn
  
