@@ -6,61 +6,11 @@
 import torch.nn as nn
 import torch
 import torch.nn.functional as F
-from dataclasses import dataclass, fields, asdict
-from .data_readers import Data
-from simple_parsing import Serializable
 import egg.core as core
 from egg.core.baselines import EMABaseline, MeanBaseline
 from .utils import set_torch_seed
+from .config import EGGParameters, Hyperparameters
 
-@dataclass
-class EGGParameters(Serializable):
-    random_seed: int
-    batch_size: int
-    checkpoint_dir: str
-    optimizer: str
-    lr: float
-    vocab_size: int
-    max_len: int
-
-    @classmethod
-    def from_argparse(cls, args):
-        """ Assumes that args is a namespace containing all the field names.
-        """
-        d = [getattr(args, f.name) for f in fields(cls)]
-        return cls(*d)
-
-    def fill_namespace(self, args):
-        for k, v in asdict(self).items():
-            setattr(args, k, v)
-
-    def get_dict_dirname(self):
-        d = self.__dict__.copy()
-        del d['random_seed']
-        del d['checkpoint_dir']
-        return d
-
-
-#  class PositionalEncoding(nn.Module):
-#      """ Stolen from tutorial:
-#      https://pytorch.org/tutorials/beginner/transformer_tutorial.html
-#      """
-#      def __init__(self, d_model, dropout=0.1, max_len=5000):
-#          super(PositionalEncoding, self).__init__()
-#          self.dropout = nn.Dropout(p=dropout)
-
-#          pe = torch.zeros(max_len, d_model)
-#          position = torch.arange(0, max_len, dtype=torch.float).unsqueeze(1)
-#          div_term = torch.exp(torch.arange(0, d_model, 2).float() *
-#                  (-torch.log(torch.Tensor([10000.0])) / d_model))
-#          pe[:, 0::2] = torch.sin(position * div_term)
-#          pe[:, 1::2] = torch.cos(position * div_term)
-#          pe = pe.unsqueeze(0).transpose(0, 1)
-#          self.register_buffer('pe', pe)
-
-#      def forward(self, x):
-#          x = x + self.pe[:x.size(0), :]
-#          return self.dropout(x)
 
 class Embedder(nn.Module):
     """ For each object, embed its features differently for each feature
@@ -99,93 +49,6 @@ class Embedder(nn.Module):
             return x[:, 0], mask
         else:
             return x, mask
-
-@dataclass
-class Hyperparameters(Serializable):
-    seed: int = 0
-    embed_dim: int = 30
-    validation_batch_size: int = 0
-    length_coef: float = 0.
-    length_coef_epoch: int = 0  # if n > 0, increment by 0.01 every n epochs
-    log_length: bool = False
-    sender_entropy_coef: float = 0.
-    sender_marg_entropy_coef: float = 0.
-    lstm_hidden: int = 30  
-    sender_type: str = 'simple'  # 'simple' or 'tfm'
-    receiver_type: str = 'simple' # 'simple' or 'att'
-    embedder: str = 'mean'
-    # tfm specific
-    n_heads: int = 4
-    n_layers: int = 2
-    lr_sched: bool = False
-    grad_norm: float = 0
-    C: str = ''  # a simple comment
-    share_embed: bool = False
-    
-    def __post_init__(self):
-        assert(self.embed_dim > 0)
-        assert(self.lstm_hidden > 0)
-
-    def get_dict_dirname(self):
-        d = self.__dict__.copy()
-        if d['sender_type'] == 'simple':
-            for u in ['n_heads', 'n_layers']:
-                del d[u]
-        del d['validation_batch_size']
-        if d['grad_norm'] == 0:
-            del d['grad_norm']
-        if not d['log_length']:
-            del d['log_length']
-        if not d['share_embed']:
-            del d['share_embed']
-        if d['C'] == '':
-            del d['C']
-
-        return d
-
- 
-@dataclass
-class GlobalParams(Serializable):
-    """ Parameters that should be parsed before other parameters are parsed,
-    because they define how they should be parsed/what to parse. 
-    Examples:
-   -  models can have different hyperparameters, so the model type should be
-    specified before.
-    - same for datasets.
-    """
-    data: str = 'id'  
-
-    def __post_init__(self):
-        assert(self.data in ['dd', 'id'])
-
-
-@dataclass
-class RetrainParams(Serializable):
-    """ Parameters that are only parsed when load_from_checkpoint is used.
-    """
-    retrain_receiver: bool = False
-    retrain_receiver_shuffled: bool = False
-    retrain_receiver_deduped: bool = False
-
-    def __post_init__(self):
-        a = self.retrain_receiver
-        b = self.retrain_receiver_shuffled
-        c = self.retrain_receiver_deduped
-        assert(not(a and b) and not(a and c) and not(b and c))
-
-    def get_dict_dirname(self):
-        d = self.__dict__.copy()
-        
-        def delete_or_replace(a, b):
-            if d[a] == False:
-                del d[a]
-            else:
-                d[b] = d[a]
-                del d[a]
-
-        delete_or_replace('retrain_receiver_shuffled', 'RSh')
-        delete_or_replace('retrain_receiver_deduped', 'RDe')
-        delete_or_replace('retrain_receiver', 'R')
         return d
 
 class SimpleSender(nn.Module):
@@ -259,8 +122,8 @@ class DiscriReceiverEmbed(nn.Module):
         return dots
 
 def create_encoder(
-    data: Data.Config,
-    hp: Hyperparameters,
+    data,
+    hp,
 ):
     sender_embedder = Embedder(
         n_features=data.n_features,
@@ -297,7 +160,7 @@ def create_encoder(
 
 def create_game(
     core_params: EGGParameters,
-    data: Data.Config,
+    data,
     hp: Hyperparameters,
     loss,
     shuffle_message=False,

@@ -5,27 +5,25 @@
 
 import os
 import torch
-import torch.nn.functional as F
 from torch.utils.data import DataLoader
 from torch.nn.utils.rnn import pad_sequence
-from simple_parsing import ArgumentParser, Serializable
 from dataclasses import dataclass, fields
 import numpy as np
 
 import egg.core as core
 from egg.core import PrintValidationEvents, get_opts
 from .data_readers import data_selector, loaders_from_dataset, dataset_fingerprint
-from .architectures import (
-    Hyperparameters, EGGParameters, create_game, GlobalParams, RetrainParams
-)
-from .utils import count_params, set_torch_seed
+from .architectures import create_game
+from .utils import count_params
 
 from .config import (
     compute_exp_dir, save_configs, represent_dict_as_str, load_configs,
+    get_config, RetrainParams,
 )
 from .callbacks import (
     InteractionSaver, FileJsonLogger, LRScheduler, CoefScheduler,
 )
+from .loss import loss
 
 
 def set_global_opts(checkpoint_dir, checkpoint_freq):
@@ -33,62 +31,6 @@ def set_global_opts(checkpoint_dir, checkpoint_freq):
     opts.checkpoint_dir = checkpoint_dir
     opts.checkpoint_freq = checkpoint_freq
 
-def get_config(params):
-    # this is quite messy, because parsing is in 2 phases:
-    # 1. parse GlobalParameters indicating what Dataset class is used, whether
-    #    we load a checkpoint, (and possibly in the future: what model is used,
-    #    etc.).
-    # 2. parse Dataset parameters parsed in phase 1, etc. 
-    # it's actually more complex, because when we continue training, we ignore
-    # most of the command line arguments, since we read config from the
-    # experiment directory.
-    # phase 1:
-    parser_1 = ArgumentParser()
-    parser_1.add_arguments(GlobalParams, dest='glob')
-    parser_1.add_argument('--load_from_checkpoint', default='')
-    args_1, left_over = parser_1.parse_known_args()
-    parser_2 = ArgumentParser()
-    checkpoint_fn = args_1.load_from_checkpoint
-    if checkpoint_fn:
-        # read config files
-        if not os.path.exists(checkpoint_fn):
-            raise ValueError("Missing checkpoint: {}".format(checkpoint_fn))
-        exp_dir = os.path.dirname(checkpoint_fn)
-        configs = load_configs(exp_dir)
-        data_cls = data_selector[configs['glob'].data]
-        print(args_1)
-        print("data_cls", data_cls)
-        print(configs['data'])
-        print(configs['glob'])
-        parser_2.add_arguments(RetrainParams, dest='retrain')
-    else:
-        data_cls = data_selector[args_1.glob.data]
-        parser_2.add_arguments(data_cls.Config, dest='data')
-    # When we load a checkpoint, we sometimes retrain part of the architecture
-    # (see --retrain...). In that case, we want to control the seed. That's why
-    # we use Hyperparameters.
-    parser_2.add_arguments(Hyperparameters, dest='hp')
-    parser_2.add_argument('--print_validation_events', action='store_true')
-    args_2 = core.init(parser_2, left_over)
-    # merge the namespaces
-    args_2.glob = args_1.glob
-    if checkpoint_fn:
-        configs['hp'].seed = args_2.hp.seed
-        configs['retrain'] = args_2.retrain
-        # set global opts that are read by core.trainer
-        configs['core'].fill_namespace(args_2)
-        args_2.load_from_checkpoint = checkpoint_fn  # very important! has
-        #  already been parsed during phase 1, but core.init has its own.
-    else:
-        core_params = EGGParameters.from_argparse(args_2)
-        configs = {  # order matters, must match that of load_configs
-            'glob': args_2.glob,
-            'data': args_2.data,
-            'hp': args_2.hp,
-            'core': core_params,
-        }
-    return configs, data_cls, checkpoint_fn
- 
 def main(params):
     if torch.cuda.is_available():
         torch.backends.cudnn.deterministic = True
@@ -106,8 +48,8 @@ def main(params):
     if checkpoint_fn:
         retrain = configs['retrain']
         retraining_recv = (retrain.retrain_receiver or 
-                  retrain.retrain_receiver_shuffled or
-                  retrain.retrain_receiver_deduped)
+                  retrain.shuffled or
+                  retrain.deduped)
     else:
         retrain = RetrainParams()
         retraining_recv = False
@@ -145,24 +87,13 @@ def main(params):
         valid_bs=hyper_params.validation_batch_size,
     )
 
-    def loss(_sender_input, _message, _receiver_input, receiver_output, labels):
-        #  print("sizes msg={}, receiver_in={}, receiv_out={}, lbl={}".format(
-        #      _message.size(), _receiver_input.size(), receiver_output.size(),
-        #      labels.size()))
-        pred = receiver_output.argmax(dim=1)
-        acc = (pred == labels).detach().float()
-        loss = F.cross_entropy(receiver_output, labels, reduction="none")
-        n_distractor = dataset.n_distractors(_sender_input)
-        return loss, {'acc': acc, 'n_distractor': n_distractor}
-
-
     game = create_game(
         core_params,
         data_config, 
         hyper_params,
-        loss,
-        shuffle_message=retrain.retrain_receiver_shuffled,
-        dedup_message=retrain.retrain_receiver_deduped,
+        loss(dataset),
+        shuffle_message=retrain.shuffled,
+        dedup_message=retrain.deduped,
     )
 
     params = list(game.parameters())
