@@ -74,8 +74,6 @@ def main(params):
         set_global_opts(checkpoint_dir=exp_dir, checkpoint_freq=100)
         save_configs(configs, exp_dir)
 
-    if (hyper_params.validation_batch_size==0):
-        hyper_params.validation_batch_size=get_opts().batch_size
     dataset = data_cls(data_config)
     print("data:", dataset_fingerprint(dataset))
 

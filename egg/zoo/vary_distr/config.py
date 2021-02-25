@@ -276,4 +276,8 @@ def get_config(params):
             'hp': args_2.hp,
             'core': core_params,
         }
+
+    if (configs['hp'].validation_batch_size == 0):
+        configs['hp'].validation_batch_size = configs['core'].batch_size
+
     return configs, data_cls, checkpoint_fn

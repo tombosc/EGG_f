@@ -53,7 +53,10 @@ class RnnEncoder(nn.Module):
         self.embedding = nn.Embedding(vocab_size, embed_dim)
 
     def forward(
-        self, message: torch.Tensor, lengths: Optional[torch.Tensor] = None
+        self,
+        message: torch.Tensor,
+        lengths: Optional[torch.Tensor] = None,
+        intermediate_states = False,
     ) -> torch.Tensor:
         """Feeds a sequence into an RNN cell and returns the last hidden state of the last layer.
         Arguments:
@@ -71,9 +74,14 @@ class RnnEncoder(nn.Module):
         packed = nn.utils.rnn.pack_padded_sequence(
             emb, lengths.cpu(), batch_first=True, enforce_sorted=False
         )
-        _, rnn_hidden = self.cell(packed)
+        packed_output, rnn_hidden = self.cell(packed)
 
         if isinstance(self.cell, nn.LSTM):
             rnn_hidden, _ = rnn_hidden
-
-        return rnn_hidden[-1]
+        
+        if intermediate_states:
+            output, _ = nn.utils.rnn.pad_packed_sequence(packed_output,
+                    batch_first=False)
+            return output
+        else:
+            return rnn_hidden[-1]

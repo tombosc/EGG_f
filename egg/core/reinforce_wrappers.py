@@ -420,14 +420,38 @@ class RnnReceiverDeterministic(nn.Module):
         self.agent = agent
         self.encoder = RnnEncoder(vocab_size, embed_dim, hidden_size, cell, num_layers)
 
-    def forward(self, message, input=None, lengths=None):
-        encoded = self.encoder(message, lengths)
+    def forward(self, message, input=None, lengths=None,
+            intermediate_predictions=False):
+        """ intermediate_predictions: if True, compute intermediate agent
+        output for all the positions between 0 and max_len. 
+        """
+        if intermediate_predictions:
+            agent_outputs = []
+            # we simply recompute everything. 
+            # it's costly, but only done sometimes after model is trained.
+            encoded_t = self.encoder(
+                message,
+                lengths,
+                intermediate_states=True,
+            )
+            # encoded size (L, bs, d)
+            for h_t in encoded_t:
+                agent_outputs.append(self.agent(h_t, input))
+            agent_outputs = torch.stack(agent_outputs)
+        encoded = self.encoder(
+            message,
+            lengths,
+            intermediate_states=False,
+        )
+        # encoded size (bs, d)
         agent_output = self.agent(encoded, input)
 
         logits = torch.zeros(agent_output.size(0)).to(agent_output.device)
         entropy = logits
-
-        return agent_output, logits, entropy
+        if intermediate_predictions:
+            return (agent_output, encoded_t, agent_outputs), logits, entropy
+        else:
+            return agent_output, logits, entropy
 
 
 class SenderReceiverRnnReinforce(nn.Module):
@@ -536,7 +560,8 @@ class SenderReceiverRnnReinforce(nn.Module):
         self.length_cost = new_val
 
 
-    def forward(self, sender_input, labels, receiver_input=None):
+    def forward(self, sender_input, labels, receiver_input=None,
+            intermediate_predictions=False):
         message, log_prob_s, entropy_s, logits_s = self.sender(sender_input)
         message_length = find_lengths(message)
         if self.shuffle_message:
@@ -546,8 +571,10 @@ class SenderReceiverRnnReinforce(nn.Module):
             message_length = find_lengths(message)
 
         receiver_output, log_prob_r, entropy_r = self.receiver(
-            message, receiver_input, message_length
+            message, receiver_input, message_length, intermediate_predictions,
         )
+        if intermediate_predictions:
+            receiver_output, encoded_t, intermediate_output = receiver_output
 
         loss, aux_info = self.loss(
             sender_input, message, receiver_input, receiver_output, labels
@@ -629,6 +656,9 @@ class SenderReceiverRnnReinforce(nn.Module):
         aux_info["sender_marg_entropy"] = marginal_entropy_s.detach()
         aux_info["receiver_entropy"] = entropy_r.detach()
         aux_info["length"] = message_length.float()  # will be averaged
+        if intermediate_predictions:
+            aux_info['intermediate_message'] = encoded_t 
+            aux_info['intermediate_predictions'] = intermediate_output 
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
