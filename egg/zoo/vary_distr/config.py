@@ -90,12 +90,14 @@ class Hyperparameters(Serializable):
     validation_batch_size: int = 0
     length_coef: float = 0.
     length_coef_epoch: int = 0  # if n > 0, increment by 0.01 every n epochs
-    log_length: bool = False
+    log_length: bool = False  # TODO remove
     sender_entropy_coef: float = 0.
     sender_marg_entropy_coef: float = 0.
     lstm_hidden: int = 30  
     sender_type: str = 'simple'  # 'simple' or 'tfm'
+    grad_estim: str = 'reinforce'
     receiver_type: str = 'simple' # 'simple' or 'att'
+    gumbel_T_decay: float = 1.0  # multiplicative (1: no decay)
     embedder: str = 'mean'
     # tfm specific
     n_heads: int = 4
@@ -123,6 +125,17 @@ class Hyperparameters(Serializable):
             del d['share_embed']
         if d['C'] == '':
             del d['C']
+        if d['grad_estim'] == 'reinforce':
+            del d['grad_estim']
+            del d['gumbel_T_decay']
+        else:
+            if d['gumbel_T_decay'] == 1.0:
+                del d['gumbel_T_decay']
+            for k in ['log_length', 'length_coef', 'sender_marg_entropy_coef',
+                    'sender_entropy_coef']:
+                if k in d:
+                    del d[k]
+        return d
 
 
 
@@ -151,7 +164,7 @@ def represent_dict_as_str(d):
         'l2', 'standardize': 'std', 'epochs': 'ep', 'epoch': 'ep', 'loss': 'L', 'name': '',
         'heads': 'H', 'head': 'H', 'layers': 'lay', 
         'distractors': 'dis', 'min': 'm', 'max': 'M', 
-        'vocab': 'V', 'size': 'sz',
+        'vocab': 'V', 'size': 'sz', 'grad_estim': 'GE', 'gumbel_T_decay': 'GTd',
         'retrain_receiver_shuffled': 'RSh',
         'retrain_receiver_deduped': 'RDe',
         'patience': 'P',

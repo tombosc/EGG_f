@@ -23,7 +23,10 @@ class Embedder(nn.Module):
         # max_value+1 (not included). For each feature, the embedding will be
         # different; that's why we need self.embed_vector.
         self.embed_dim = dim_embed
-        self.embeddings = nn.Embedding(1 + n_features * max_value, dim_embed)
+        #  self.embeddings = nn.Embedding(1 + n_features * max_value, dim_embed)
+        self.embeddings = core.RelaxedEmbedding(
+            1 + n_features * max_value, dim_embed,
+        )
         self.embed_vector = (torch.arange(n_features) * max_value).view(1, 1, n_features)
         assert(pooling in ['mean', 'cat'])
         if pooling == 'mean':
@@ -171,16 +174,30 @@ def create_game(
     set_torch_seed(hp.seed)
     sender, sender_embedder = create_encoder(data, hp)
 
-    sender = core.RnnSenderReinforce( 
-        sender,
-        vocab_size=core_params.vocab_size,
-        embed_dim=hp.embed_dim,
-        hidden_size=hp.lstm_hidden,
-        cell='lstm',
-        max_len=core_params.max_len,
-        condition_concat=True,
-        always_sample=True,
-    )
+    if hp.grad_estim == 'reinforce':
+        sender = core.RnnSenderReinforce( 
+            sender,
+            vocab_size=core_params.vocab_size,
+            embed_dim=hp.embed_dim,
+            hidden_size=hp.lstm_hidden,
+            cell='lstm',
+            max_len=core_params.max_len,
+            condition_concat=True,
+            always_sample=True,
+        )
+    elif hp.grad_estim in ['gs', 'gs_st']:
+        sender = core.RnnSenderGS(
+            sender,
+            vocab_size=core_params.vocab_size,
+            embed_dim=hp.embed_dim,
+            hidden_size=hp.lstm_hidden,
+            cell='lstm',
+            max_len=core_params.max_len,
+            #  condition_concat=True,  # TODO!
+            #  always_sample=True,
+            straight_through=(hp.grad_estim == 'gs_st'),
+            temperature=1.0,
+        )
 
     if hp.share_embed:
         receiver_embedder = sender_embedder
@@ -200,7 +217,11 @@ def create_game(
                 n_embeddings=data.max_value,
                 encoder=receiver_embedder,
         )
-        receiver = core.RnnReceiverDeterministic(
+        if hp.grad_estim == 'reinforce':
+            recv_wrapper = core.RnnReceiverDeterministic
+        elif hp.grad_estim in ['gs', 'gs_st']:
+            recv_wrapper = core.RnnReceiverGS
+        receiver = recv_wrapper(
             receiver,
             vocab_size=core_params.vocab_size,
             embed_dim=hp.embed_dim,
@@ -216,6 +237,9 @@ def create_game(
                 n_max_objects=data.max_distractors,
                 vocab_size=core_params.vocab_size,
         )
+        # TODO deprecate that class:
+        # AttentionReceiver did the job of the RnnReceiverDet/GS wrapper so by
+        # removing it, we can remove copy-pasted code
     elif hp.receiver_type == 'tfm':
         if hp.embedder == 'cat':
             in_dim = data.n_features * hp.embed_dim
@@ -240,7 +264,11 @@ def create_game(
             encoder=receiver_embedder,
         )
 
-        receiver = core.RnnReceiverDeterministic(
+        if hp.grad_estim == 'reinforce':
+            recv_wrapper = core.RnnReceiverDeterministic
+        elif hp.grad_estim in ['gs', 'gs_st']:
+            recv_wrapper = core.RnnReceiverGS
+        receiver = recv_wrapper(
             receiver,
             vocab_size=core_params.vocab_size,
             embed_dim=hp.embed_dim,
@@ -251,19 +279,22 @@ def create_game(
     else:
         raise ValueError()
 
-    game = core.SenderReceiverRnnReinforce(
-        sender,
-        receiver,
-        loss,
-        sender_entropy_coeff=hp.sender_entropy_coef,
-        sender_marginal_entropy_coeff=hp.sender_marg_entropy_coef,
-        receiver_entropy_coeff=0.,
-        length_cost=hp.length_coef,
-        log_length=hp.log_length,
-        baseline_type=MeanBaseline,
-        shuffle_message=shuffle_message,
-        dedup_message=dedup_message,
-    )
+    if hp.grad_estim == 'reinforce':
+        game = core.SenderReceiverRnnReinforce(
+            sender,
+            receiver,
+            loss,
+            sender_entropy_coeff=hp.sender_entropy_coef,
+            sender_marginal_entropy_coeff=hp.sender_marg_entropy_coef,
+            receiver_entropy_coeff=0.,
+            length_cost=hp.length_coef,
+            log_length=hp.log_length,
+            baseline_type=MeanBaseline,
+            shuffle_message=shuffle_message,
+            dedup_message=dedup_message,
+        )
+    else:
+        game = core.SenderReceiverRnnGS(sender, receiver, loss)
     return game
 
 class FCAttention(nn.Module):

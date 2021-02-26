@@ -93,6 +93,8 @@ def main(params):
         shuffle_message=retrain.shuffled,
         dedup_message=retrain.deduped,
     )
+    print("Model")
+    print(game)
 
     params = list(game.parameters())
     print("#params={}".format(count_params(params)))
@@ -127,6 +129,13 @@ def main(params):
         raise NotImplementedError()
         scheduler = torch.optim.lr_scheduler.StepLR(optimizer, step_size=1.0, gamma=0.95)
         callbacks.append(LRScheduler(scheduler))
+
+    if hyper_params.grad_estim in ['gs', 'gs_st']:
+        callbacks.append(
+            core.TemperatureUpdater(agent=game.sender,
+                decay=hyper_params.gumbel_T_decay, minimum=0.1)
+        )
+
 
     if hyper_params.length_coef_epoch > 0:
         sched = CoefScheduler(
