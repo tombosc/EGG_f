@@ -87,7 +87,7 @@ class Data(Dataset):
             receiver_input = sender_input[permut]
             if necessary_features:
                 sender_input = torch.Tensor(sender_input).long()
-                n = self.get_necessary_features(sender_input.unsqueeze(0))[0]
+                n = get_necessary_features(sender_input.unsqueeze(0))[0]
                 self.frame.append((
                     sender_input,
                     torch.Tensor(label).long(),

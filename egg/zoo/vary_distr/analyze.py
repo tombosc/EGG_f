@@ -2,7 +2,7 @@ import torch
 import argparse
 import os
 import json
-from .data_readers import Data
+from .data_readers import get_necessary_features
 import numpy as np
 
 parser = argparse.ArgumentParser()
@@ -10,7 +10,7 @@ parser.add_argument("interaction_file", type=str)
 args = parser.parse_args()
 exps_root = os.environ["EGG_EXPS_ROOT"]
 data = torch.load(exps_root + '/' + args.interaction_file)
-n_nec = Data.n_necessary_features(data.sender_input)
+n_nec = get_necessary_features(data.sender_input)[0]
 
 n_nec = n_nec.float().tolist()
 lens = data.message_length.float().tolist()
