@@ -280,6 +280,7 @@ def dump_interactions(
 
     with torch.no_grad():
         for batch in dataset:
+            #  print("Batch", batch)
             batch = move_to(batch, device)
             _, interaction = game(*batch)
             interaction = interaction.to("cpu")
@@ -293,15 +294,17 @@ def dump_interactions(
                 for i in range(interaction.size):
                     length = interaction.message_length[i].long().item()
                     interaction.message[i, length:] = 0  # 0 is always EOS
-
             full_interaction = (
-                full_interaction + interaction
+                #  full_interaction + interaction
+                Interaction.from_iterable((full_interaction, interaction))
                 if full_interaction is not None
                 else interaction
             )
+            #  print("END", full_interaction.size, interaction)
 
     game.train(mode=train_state)
-    return interaction
+    #  return interaction
+    return full_interaction
 
 
 def move_to(x: Any, device: torch.device) -> Any:
