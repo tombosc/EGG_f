@@ -3,7 +3,7 @@
   "n_bits": [4],
   "bits_s": [4],
   "bits_r": [4],
-  "n_epoch": [2000],
+  "n_epoch": [3000],
   "random_seed": [0, 1, 2, 3],
   "temperature": [0.5, 0.75, 1, 1.25],
   "gs_train_temperature": [true, false],

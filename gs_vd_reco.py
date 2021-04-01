@@ -35,7 +35,7 @@ if __name__ == '__main__':
                 cmd.append("--" + k)
                 cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
-        fn_output = os.path.join('res_vary_d_reco_var_T/' + H)
+        fn_output = os.path.join('res_vary_d_reco_var_T_af/' + H)
         if os.path.exists(fn_output):
             print("Already ran: " + " ".join(cmd))
             continue

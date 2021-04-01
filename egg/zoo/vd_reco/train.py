@@ -99,8 +99,8 @@ def main(params):
         if opts.bits_r != 4 and opts.bits_s != 4:
             raise ValueError("These are ignored when --variable_bits")
         data = VariableData(opts.n_bits)
-        train_loader = DataLoader(data)
-        test_loader = DataLoader(data)
+        train_loader = DataLoader(data, batch_size=opts.batch_size, shuffle=True)
+        test_loader = DataLoader(data, batch_size=opts.batch_size)
         #  train_size = int(0.5 * len(data))
         #  test_size = len(data) - train_size
 
