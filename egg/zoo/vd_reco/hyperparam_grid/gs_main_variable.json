@@ -1,0 +1,17 @@
+{
+  "vocab_size": [1024],
+  "n_bits": [4],
+  "bits_s": [4],
+  "bits_r": [4],
+  "n_epoch": [2000],
+  "random_seed": [0, 1, 2, 3],
+  "temperature": [0.5, 0.75, 1, 1.25],
+  "gs_train_temperature": [true, false],
+  "batch_size": [8, 16, 32],
+  "sender_hidden": [80],
+  "receiver_hidden": [40],
+  "lr": [0.001, 0.0003],
+  "early_stopping_thr": [0.99],
+  "predict_temperature": [true, false],
+  "variable_bits": [true]
+}

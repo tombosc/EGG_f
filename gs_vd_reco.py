@@ -16,7 +16,7 @@ if __name__ == '__main__':
     print("Running with seed", args.seed)
     np.random.seed(args.seed)
 
-    hp_fn = 'egg/zoo/vd_reco/hyperparam_grid/gs_main.json'
+    hp_fn = 'egg/zoo/vd_reco/hyperparam_grid/gs_main_variable.json'
     with open(hp_fn, 'r') as f:
         hp = json.load(f)
     hp['bits_r'] = [4]
@@ -26,11 +26,16 @@ if __name__ == '__main__':
         #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
         cmd = ['--no_cuda']
         for k, v in hp.items():
-            cmd.append("--" + k)
-            chosen_v = np.random.choice(v)
-            cmd.append(str(chosen_v))
+            chosen_v = np.random.choice(v).item()
+            print(k, chosen_v, type(chosen_v))
+            if type(chosen_v) == bool:
+                if chosen_v:
+                    cmd.append("--" + k)
+            else:
+                cmd.append("--" + k)
+                cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
-        fn_output = os.path.join('res_vary_d_reco/' + H)
+        fn_output = os.path.join('res_vary_d_reco_var_T/' + H)
         if os.path.exists(fn_output):
             print("Already ran: " + " ".join(cmd))
             continue

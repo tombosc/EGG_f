@@ -49,6 +49,8 @@ def get_params(params):
     parser.add_argument('--mode', type=str, default='gs',
                         help="Selects whether Reinforce or GumbelSoftmax relaxation is used for training {rf, gs,"
                              " non_diff} (default: gs)")
+    parser.add_argument('--gs_train_temperature',
+                        action='store_true', default=False)
     parser.add_argument('--variable_bits',
                         action='store_true', default=False)
     parser.add_argument('--predict_temperature',
@@ -124,7 +126,9 @@ def main(params):
                         predict_temperature=opts.predict_temperature)
         if opts.mode == 'gs':
             sender = core.GumbelSoftmaxWrapper(
-                agent=sender, temperature=opts.temperature)
+                agent=sender, temperature=opts.temperature,
+                trainable_temperature=opts.gs_train_temperature,
+            )
             receiver = Receiver(n_bits=opts.n_bits,
                                 n_hidden=opts.receiver_hidden)
             receiver = core.SymbolReceiverWrapper(
@@ -191,18 +195,18 @@ def main(params):
 
     intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
                                      input_intervention=True)
-    #  entropy_calculator = ComputeEntropy(
-    #      test_loader, device=device, is_gs=opts.mode == 'gs',
-    #      var_length=opts.variable_length)
+    entropy_calculator = ComputeEntropy(
+        test_loader, device=device, is_gs=opts.mode == 'gs',
+        var_length=opts.variable_length)
 
     trainer = core.Trainer(
         game=game, optimizer=optimizer,
         train_data=train_loader,
         validation_data=test_loader,
         callbacks=[core.ConsoleLogger(as_json=True),
-                   #  entropy_calculator])
-                   EarlyStopperAccuracy(opts.early_stopping_thr),
-                   intervention])
+                   entropy_calculator])
+                   #EarlyStopperAccuracy(opts.early_stopping_thr),
+                   #  intervention])
 
     trainer.train(n_epochs=opts.n_epochs)
 

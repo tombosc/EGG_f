@@ -85,7 +85,9 @@ class Sender(nn.Module):
         h = self.fc1(x)
         message = self.fc2(h)
         if self.fc_temperature:
-            t = self.fc_temperature(h)*2 + 0.2
-            message = message / (t + 1e-6)
+            #  t = self.fc_temperature(h)*2 + 0.2
+            #  message = message / (t + 1e-6)
+            t = F.relu(self.fc_temperature(h))*100
+            message = message / (t + 0.1)
         #  print(message)
         return message
