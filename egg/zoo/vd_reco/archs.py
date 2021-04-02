@@ -14,7 +14,8 @@ import egg.core as core
 class Receiver(nn.Module):
     def __init__(self, n_bits, n_hidden):
         super(Receiver, self).__init__()
-        self.emb_column = nn.Linear(n_bits, n_hidden)
+        #  self.emb_column = nn.Linear(n_bits, n_hidden)
+        self.emb_column = core.RelaxedEmbedding(n_bits, n_hidden)
 
         self.fc1 = nn.Linear(2 * n_hidden, 2 * n_hidden)
         self.fc2 = nn.Linear(2 * n_hidden, n_bits)
@@ -61,7 +62,7 @@ class ReinforcedReceiver(nn.Module):
 
 class Sender(nn.Module):
     def __init__(self, vocab_size, n_bits, n_hidden,
-            predict_temperature=False):
+            predict_temperature=False, fixed_mlp=False):
         super(Sender, self).__init__()
         self.emb = nn.Linear(n_bits, n_hidden)
         self.fc1 = nn.Sequential(
@@ -69,6 +70,16 @@ class Sender(nn.Module):
             nn.ReLU(),
             nn.Dropout(0.1),
         )
+        if fixed_mlp:
+            self.fixed_mlp = nn.Sequential(
+                nn.Linear(n_hidden, n_hidden*4),
+                nn.Tanh(),
+                nn.Linear(n_hidden*4, vocab_size),
+            )
+            for p in self.fixed_mlp.parameters():
+                p.requires_grad = False
+        else:
+            self.fixed_mlp = None
         if predict_temperature:
             self.fc_temperature = nn.Sequential(
                 nn.Linear(n_hidden*2, 1),
@@ -84,6 +95,8 @@ class Sender(nn.Module):
         x = F.leaky_relu(x)
         h = self.fc1(x)
         message = self.fc2(h)
+        if self.fixed_mlp:
+            message += self.fixed_mlp(x) * 1
         if self.fc_temperature:
             #  t = self.fc_temperature(h)*2 + 0.2
             #  message = message / (t + 1e-6)

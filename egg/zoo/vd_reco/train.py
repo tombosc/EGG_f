@@ -65,6 +65,8 @@ def get_params(params):
                         help='Size of the embeddings of Receiver (default: 10)')
     parser.add_argument('--early_stopping_thr', type=float, default=0.99,
                         help="Early stopping threshold on accuracy (defautl: 0.99)")
+    parser.add_argument('--fixed_mlp',
+                        action='store_true', default=False)
 
     args = core.init(arg_parser=parser, params=params)
     if args.sender_lr is None:
@@ -123,7 +125,9 @@ def main(params):
     if not opts.variable_length:
         sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
                         vocab_size=opts.vocab_size,
-                        predict_temperature=opts.predict_temperature)
+                        predict_temperature=opts.predict_temperature,
+                        fixed_mlp=opts.fixed_mlp,
+        )
         if opts.mode == 'gs':
             sender = core.GumbelSoftmaxWrapper(
                 agent=sender, temperature=opts.temperature,
@@ -195,18 +199,24 @@ def main(params):
 
     intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
                                      input_intervention=True)
+    bin_by = 0 if opts.variable_bits else -1
     entropy_calculator = ComputeEntropy(
         test_loader, device=device, is_gs=opts.mode == 'gs',
-        var_length=opts.variable_length)
+        var_length=opts.variable_length, bin_by=bin_by)
 
+    #  if opts.variable_bits:
+    callbacks = [core.ConsoleLogger(as_json=True),
+                 entropy_calculator]
+    #  else:
+    #      callbacks = [core.ConsoleLogger(as_json=True),
+    #                 EarlyStopperAccuracy(opts.early_stopping_thr),
+    #                 intervention]
     trainer = core.Trainer(
         game=game, optimizer=optimizer,
         train_data=train_loader,
         validation_data=test_loader,
-        callbacks=[core.ConsoleLogger(as_json=True),
-                   entropy_calculator])
-                   #EarlyStopperAccuracy(opts.early_stopping_thr),
-                   #  intervention])
+        callbacks=callbacks,
+    )
 
     trainer.train(n_epochs=opts.n_epochs)
 

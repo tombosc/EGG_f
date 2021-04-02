@@ -24,12 +24,13 @@ def entropy(messages):
 
 
 class ComputeEntropy(core.Callback):
-    def __init__(self, dataset, is_gs, device, var_length):
+    def __init__(self, dataset, is_gs, device, var_length, bin_by):
         super().__init__()
         self.dataset = dataset
         self.device = device
         self.is_gs = is_gs
         self.var_length = var_length
+        self.bin_by = bin_by
      
     def on_epoch_end(self, _loss: float, _logs: core.Interaction, _epoch: int):
         game = self.trainer.game
@@ -56,13 +57,15 @@ class ComputeEntropy(core.Callback):
         binned_messages = defaultdict(list)
         for i in range(interactions.size):
             msg = interactions.message[i] 
-            n_bits = interactions.sender_input[i, 0].item()
-            binned_messages[n_bits].append(msg)
+            if self.bin_by > 0:
+                bin_ = interactions.sender_input[i, self.bin_by].item()
+            else:
+                bin_ = 0  # no bin
+            binned_messages[bin_].append(msg)
 
         entropy_messages = {}
-        for n_bits, msgs in binned_messages.items():
-            entropy_messages[n_bits] = entropy(msgs)
-        #  import pdb; pdb.set_trace()
+        for bin_, msgs in binned_messages.items():
+            entropy_messages[bin_] = entropy(msgs)
         return entropy_messages
         #  return dict(
         #      codewords_entropy=entropy_messages,
