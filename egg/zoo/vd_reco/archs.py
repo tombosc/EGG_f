@@ -65,21 +65,13 @@ class Sender(nn.Module):
             predict_temperature=False, fixed_mlp=False):
         super(Sender, self).__init__()
         self.emb = nn.Linear(n_bits, n_hidden)
+        self.vocab_size = vocab_size
+        self.layer_norm = nn.LayerNorm(n_hidden*2)
         self.fc1 = nn.Sequential(
             nn.Linear(n_hidden, n_hidden*2),
             nn.ReLU(),
-            nn.Dropout(0.1),
+            nn.Dropout(0.5),
         )
-        if fixed_mlp:
-            self.fixed_mlp = nn.Sequential(
-                nn.Linear(n_hidden, n_hidden*4),
-                nn.Tanh(),
-                nn.Linear(n_hidden*4, vocab_size),
-            )
-            for p in self.fixed_mlp.parameters():
-                p.requires_grad = False
-        else:
-            self.fixed_mlp = None
         if predict_temperature:
             self.fc_temperature = nn.Sequential(
                 nn.Linear(n_hidden*2, 1),
@@ -94,9 +86,8 @@ class Sender(nn.Module):
         x = self.emb(bits.float())
         x = F.leaky_relu(x)
         h = self.fc1(x)
+        h = self.layer_norm(h)
         message = self.fc2(h)
-        if self.fixed_mlp:
-            message += self.fixed_mlp(x) * 1
         if self.fc_temperature:
             #  t = self.fc_temperature(h)*2 + 0.2
             #  message = message / (t + 1e-6)

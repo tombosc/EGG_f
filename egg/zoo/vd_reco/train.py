@@ -13,39 +13,33 @@ from torch.utils.data import DataLoader, random_split
 import egg.core as core
 from egg.core import EarlyStopperAccuracy
 from .archs import (Receiver, ReinforcedReceiver, Sender)
-from .features import (OneHotLoader, UniformLoader, VariableData)
+from .features import VariableData, FixedData
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
-from .callbacks import ComputeEntropy
+from .callbacks import ComputeEntropy, LogNorms, LRAnnealer
 
 
 def get_params(params):
     parser = argparse.ArgumentParser()
     parser.add_argument('--n_bits', type=int, default=8,
                         help='')
-    parser.add_argument('--bits_s', type=int, default=4,
-                        help='')
     parser.add_argument('--bits_r', type=int, default=4,
                         help='')
-    parser.add_argument('--n_examples_per_epoch', type=int, default=8000,
-                        help='Number of examples seen in an epoch (default: 8000)')
-
     parser.add_argument('--sender_hidden', type=int, default=10,
                         help='Size of the hidden layer of Sender (default: 10)')
     parser.add_argument('--receiver_hidden', type=int, default=10,
                         help='Size of the hidden layer of Receiver (default: 10)')
-
+    parser.add_argument('--momentum', type=float, default=0.9,
+                        help="Momentum (β_1 for Adam)")
     parser.add_argument('--temperature', type=float, default=1.0,
                         help="GS temperature for the sender (default: 1.0)")
     parser.add_argument('--sender_entropy_coeff', type=float, default=1e-2,
                         help="Entropy regularisation coeff for Sender (default: 1e-2)")
-    parser.add_argument('--receiver_entropy_coeff', type=float, default=1e-2,
+    parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
                         help="Entropy regularisation coeff for Receiver (default: 1e-2)")
+    parser.add_argument('--train_test_ratio', type=float, default=-1,
+                        help="If -1, train and test are full data.")
 
-    parser.add_argument('--sender_lr', type=float, default=None,
-                        help="Learning rate for Sender's parameters")
-    parser.add_argument('--receiver_lr', type=float, default=None,
-                        help="Learning rate for Receiver's parameters")
-
+    #  parser.add_argument('--optimizer', type=str, default='adam')
     parser.add_argument('--mode', type=str, default='gs',
                         help="Selects whether Reinforce or GumbelSoftmax relaxation is used for training {rf, gs,"
                              " non_diff} (default: gs)")
@@ -63,18 +57,12 @@ def get_params(params):
                         help='Size of the embeddings of Sender (default: 10)')
     parser.add_argument('--receiver_emb', type=int, default=10,
                         help='Size of the embeddings of Receiver (default: 10)')
-    parser.add_argument('--early_stopping_thr', type=float, default=0.99,
-                        help="Early stopping threshold on accuracy (defautl: 0.99)")
     parser.add_argument('--fixed_mlp',
                         action='store_true', default=False)
 
     args = core.init(arg_parser=parser, params=params)
-    if args.sender_lr is None:
-        args.sender_lr = args.lr
-    if args.receiver_lr is None:
-        args.receiver_lr = args.lr
 
-    assert args.n_examples_per_epoch % args.batch_size == 0
+    #  assert args.n_examples_per_epoch % args.batch_size == 0
     return args
 
 
@@ -98,29 +86,23 @@ def main(params):
     device = opts.device
 
     if opts.variable_bits:
-        if opts.bits_r != 4 and opts.bits_s != 4:
+        if opts.bits_r != 4:
             raise ValueError("These are ignored when --variable_bits")
         data = VariableData(opts.n_bits)
-        train_loader = DataLoader(data, batch_size=opts.batch_size, shuffle=True)
-        test_loader = DataLoader(data, batch_size=opts.batch_size)
-        #  train_size = int(0.5 * len(data))
-        #  test_size = len(data) - train_size
-
-        #  train_data, test_data = random_split(data, (train_size, test_size))
-        #  train_loader = DataLoader(train_data)
-        #  test_loader = DataLoader(test_data)
         n_sender_inputs = opts.n_bits + 1
     else:
+        data = FixedData(opts.n_bits, opts.bits_r)
         n_sender_inputs = opts.n_bits
-        train_loader = OneHotLoader(n_bits=opts.n_bits,
-                                    bits_s=opts.bits_s,
-                                    bits_r=opts.bits_r,
-                                    batch_size=opts.batch_size,
-                                    batches_per_epoch=opts.n_examples_per_epoch/opts.batch_size)
 
-        test_loader = UniformLoader(
-            n_bits=opts.n_bits, bits_s=opts.bits_s, bits_r=opts.bits_r)
-        test_loader.batch = [x.to(device) for x in test_loader.batch]
+    if opts.train_test_ratio != -1:
+        train_size = int(opts.train_test_ratio * len(data))
+        test_size = len(data) - train_size
+        train_data, test_data = random_split(data, (train_size, test_size))
+    else:
+        train_data = data
+        test_data = data
+    train_loader = DataLoader(train_data, batch_size=opts.batch_size, shuffle=True)
+    test_loader = DataLoader(test_data, batch_size=opts.batch_size)
 
     if not opts.variable_length:
         sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
@@ -158,59 +140,60 @@ def main(params):
                                             sender_entropy_coeff=opts.sender_entropy_coeff,
                                             receiver_entropy_coeff=opts.receiver_entropy_coeff)
     else:
-        if opts.mode != 'rf':
-            print('Only mode=rf is supported atm')
-            opts.mode = 'rf'
+        raise NotImplementedError()
+        #  if opts.mode != 'rf':
+        #      print('Only mode=rf is supported atm')
+        #      opts.mode = 'rf'
 
-        if opts.sender_cell == 'transformer':
-            receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
-            sender = Sender(n_bits=opts.n_bits, n_hidden=opts.sender_hidden,
-                            vocab_size=opts.sender_hidden)  # TODO: not really vocab
-            sender = core.TransformerSenderReinforce(agent=sender, vocab_size=opts.vocab_size, embed_dim=opts.sender_emb, max_len=opts.max_len,
-                                                     num_layers=1, num_heads=1, hidden_size=opts.sender_hidden)
-        else:
-            receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
-            sender = Sender(n_bits=opts.n_bits, n_hidden=opts.sender_hidden,
-                            vocab_size=opts.sender_hidden)  # TODO: not really vocab
-            sender = core.RnnSenderReinforce(agent=sender, vocab_size=opts.vocab_size,
-                                      embed_dim=opts.sender_emb, hidden_size=opts.sender_hidden, max_len=opts.max_len, cell=opts.sender_cell)
+        #  if opts.sender_cell == 'transformer':
+        #      receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
+        #      sender = Sender(n_bits=opts.n_bits, n_hidden=opts.sender_hidden,
+        #                      vocab_size=opts.sender_hidden)  # TODO: not really vocab
+        #      sender = core.TransformerSenderReinforce(agent=sender, vocab_size=opts.vocab_size, embed_dim=opts.sender_emb, max_len=opts.max_len,
+        #                                               num_layers=1, num_heads=1, hidden_size=opts.sender_hidden)
+        #  else:
+        #      receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
+        #      sender = Sender(n_bits=opts.n_bits, n_hidden=opts.sender_hidden,
+        #                      vocab_size=opts.sender_hidden)  # TODO: not really vocab
+        #      sender = core.RnnSenderReinforce(agent=sender, vocab_size=opts.vocab_size,
+        #                                embed_dim=opts.sender_emb, hidden_size=opts.sender_hidden, max_len=opts.max_len, cell=opts.sender_cell)
 
-        if opts.receiver_cell == 'transformer':
-            receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_emb)
-            receiver = core.TransformerReceiverDeterministic(receiver, opts.vocab_size, opts.max_len, opts.receiver_emb, num_heads=1, hidden_size=opts.receiver_hidden,
-                                                             num_layers=1)
-        else:
-            receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
-            receiver = core.RnnReceiverDeterministic(
-                receiver, opts.vocab_size, opts.receiver_emb, opts.receiver_hidden, cell=opts.receiver_cell)
+        #  if opts.receiver_cell == 'transformer':
+        #      receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_emb)
+        #      receiver = core.TransformerReceiverDeterministic(receiver, opts.vocab_size, opts.max_len, opts.receiver_emb, num_heads=1, hidden_size=opts.receiver_hidden,
+        #                                                       num_layers=1)
+        #  else:
+        #      receiver = Receiver(n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
+        #      receiver = core.RnnReceiverDeterministic(
+        #          receiver, opts.vocab_size, opts.receiver_emb, opts.receiver_hidden, cell=opts.receiver_cell)
 
-            game = core.SenderReceiverRnnGS(sender, receiver, diff_loss)
-       
-        game = core.SenderReceiverRnnReinforce(
-                sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff, receiver_entropy_coeff=opts.receiver_entropy_coeff)
+        #      game = core.SenderReceiverRnnGS(sender, receiver, diff_loss)
 
-    optimizer = torch.optim.Adam(
-        [
-            dict(params=sender.parameters(), lr=opts.sender_lr),
-            dict(params=receiver.parameters(), lr=opts.receiver_lr)
-        ])
+        #  game = core.SenderReceiverRnnReinforce(
+        #          sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff, receiver_entropy_coeff=opts.receiver_entropy_coeff)
 
+    if opts.optimizer == 'adam':
+        optimizer = torch.optim.Adam(game.parameters(), lr=opts.lr,
+                betas=(opts.momentum, 0.999))
+    elif opts.optimizer == 'sgd':
+        optimizer = torch.optim.SGD(game.parameters(), lr=opts.lr,
+                momentum=opts.momentum)
     loss = game.loss
 
-    intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
-                                     input_intervention=True)
+    #  intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
+    #                                   input_intervention=True)
     bin_by = 0 if opts.variable_bits else -1
     entropy_calculator = ComputeEntropy(
         test_loader, device=device, is_gs=opts.mode == 'gs',
         var_length=opts.variable_length, bin_by=bin_by)
+    log_norms = LogNorms(game)
 
-    #  if opts.variable_bits:
-    callbacks = [core.ConsoleLogger(as_json=True),
-                 entropy_calculator]
-    #  else:
-    #      callbacks = [core.ConsoleLogger(as_json=True),
-    #                 EarlyStopperAccuracy(opts.early_stopping_thr),
-    #                 intervention]
+    callbacks = [entropy_calculator, log_norms]
+    if opts.optimizer == 'sgd':
+        scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9999)
+        callbacks.append(LRAnnealer(scheduler))
+    # the logger should be the last one!
+    callbacks.append(core.ConsoleLogger(print_train_loss=True, as_json=True))
     trainer = core.Trainer(
         game=game, optimizer=optimizer,
         train_data=train_loader,

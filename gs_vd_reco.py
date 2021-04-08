@@ -1,4 +1,6 @@
 import json
+import glob
+import shutil
 import os
 import argparse
 import numpy as np
@@ -9,6 +11,8 @@ from hashlib import sha256
 
 if __name__ == '__main__':
     parser = argparse.ArgumentParser()
+    parser.add_argument('exp_dir', type=str)
+    parser.add_argument('config_json', type=str)
     parser.add_argument('seed', type=int)
     parser.add_argument('n_runs', type=int)
     args = parser.parse_args()
@@ -16,10 +20,23 @@ if __name__ == '__main__':
     print("Running with seed", args.seed)
     np.random.seed(args.seed)
 
-    hp_fn = 'egg/zoo/vd_reco/hyperparam_grid/gs_main_variable.json'
-    with open(hp_fn, 'r') as f:
+    with open(args.config_json, 'r') as f:
         hp = json.load(f)
-    hp['bits_r'] = [4]
+    # first, check that no config or the config is already there, but not a
+    # different config.
+    configs = glob.glob(os.path.join(args.exp_dir, "*.json"))
+    if configs:
+        with open(configs[0], 'r') as f:
+            json_existing_config = json.load(f)
+        with open(args.config_json, 'r') as f:
+            json_arg_config = json.load(f)
+        if json_arg_config != json_existing_config:
+            print("Existing config", json_existing_config)
+            print("Argument config", json_arg_config)
+            raise ValueError("Directory {} already contains a json config, and"
+                    "it is different than the passed config.".format(args.exp_dir))
+
+    shutil.copy(args.config_json, args.exp_dir)
 
     for i in range(10):
         #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
@@ -35,7 +52,8 @@ if __name__ == '__main__':
                 cmd.append("--" + k)
                 cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
-        fn_output = os.path.join('res_vary_d_reco_var_T_af/' + H)
+        
+        fn_output = os.path.join(args.exp_dir, H)
         if os.path.exists(fn_output):
             print("Already ran: " + " ".join(cmd))
             continue

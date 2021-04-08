@@ -218,6 +218,9 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
+                    for name, p in self.game.named_parameters():
+                        if p.grad != None:
+                            interaction.aux['grad_' + name] = torch.norm(p.grad).unsqueeze(0)
                     self.optimizer.step()
 
                 self.optimizer.zero_grad()
@@ -245,6 +248,24 @@ class Trainer:
             callback.on_train_begin(self)
 
         for epoch in range(self.start_epoch, n_epochs):
+            validation_loss = validation_interaction = None
+            if (
+                self.validation_data is not None
+                and self.validation_freq > 0
+                and ((epoch + 1) % self.validation_freq == 0 or epoch ==
+                    self.start_epoch)
+            ):  # noqa: E226, E501
+                for callback in self.callbacks:
+                    callback.on_test_begin(epoch + 1)  # noqa: E226
+                validation_loss, validation_interaction = self.eval()
+
+                for callback in self.callbacks:
+                    callback.on_test_end(
+                        validation_loss, validation_interaction, epoch + 1
+                    )  # noqa: E226
+            
+            # inversed the order of validation and training so we know how much
+            # entropy in the message there is before training, what acc, etc.
             for callback in self.callbacks:
                 callback.on_epoch_begin(epoch + 1)  # noqa: E226
 
@@ -255,20 +276,6 @@ class Trainer:
                     train_loss, train_interaction, epoch + 1
                 )  # noqa: E226
 
-            validation_loss = validation_interaction = None
-            if (
-                self.validation_data is not None
-                and self.validation_freq > 0
-                and (epoch + 1) % self.validation_freq == 0
-            ):  # noqa: E226, E501
-                for callback in self.callbacks:
-                    callback.on_test_begin(epoch + 1)  # noqa: E226
-                validation_loss, validation_interaction = self.eval()
-
-                for callback in self.callbacks:
-                    callback.on_test_end(
-                        validation_loss, validation_interaction, epoch + 1
-                    )  # noqa: E226
 
             if self.should_stop:
                 for callback in self.callbacks:
