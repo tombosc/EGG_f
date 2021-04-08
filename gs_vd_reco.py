@@ -15,6 +15,7 @@ if __name__ == '__main__':
     parser.add_argument('config_json', type=str)
     parser.add_argument('seed', type=int)
     parser.add_argument('n_runs', type=int)
+    parser.add_argument('--backup', type=str, help='Backup to directory after each run.')
     args = parser.parse_args()
 
     print("Running with seed", args.seed)
@@ -38,7 +39,7 @@ if __name__ == '__main__':
 
     shutil.copy(args.config_json, args.exp_dir)
 
-    for i in range(10):
+    for i in range(args.n_runs):
         #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
         #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
         cmd = ['--no_cuda']
@@ -63,3 +64,5 @@ if __name__ == '__main__':
         with open(fn_output, 'w') as f_out:
             with redirect_stdout(f_out):
                 main(cmd)
+        if args.backup:
+            shutil.copy(fn_output, os.path.join(args.backup, H))
