@@ -46,7 +46,7 @@ class ComputeEntropy(core.Callback):
         binned_messages = defaultdict(list)
         for i in range(interactions.size):
             msg = interactions.message[i] 
-            if self.bin_by > 0:
+            if self.bin_by >= 0:
                 bin_ = interactions.sender_input[i, self.bin_by].item()
             else:
                 bin_ = 0  # no bin
