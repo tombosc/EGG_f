@@ -39,7 +39,8 @@ if __name__ == '__main__':
 
     shutil.copy(args.config_json, args.exp_dir)
 
-    for i in range(args.n_runs):
+    n_run = 0
+    while n_run < args.n_runs:
         #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
         #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
         cmd = ['--no_cuda']
@@ -66,3 +67,4 @@ if __name__ == '__main__':
                 main(cmd)
         if args.backup:
             shutil.copy(fn_output, os.path.join(args.backup, H))
+        n_run += 1

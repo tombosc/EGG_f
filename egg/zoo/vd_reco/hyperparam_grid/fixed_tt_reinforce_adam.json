@@ -1,7 +1,7 @@
 {
   "vocab_size": [1024],
   "n_bits": [8],
-  "train_test_ratio": [0.5, 1],
+  "train_test_ratio": [0.5, -1],
   "bits_r": [1, 6, 7, 8],
   "n_epoch": [2000],
   "mode": ["rf"],
