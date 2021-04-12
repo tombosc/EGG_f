@@ -13,6 +13,7 @@ from typing import Any, Iterable, List, Optional
 import numpy as np
 import torch
 
+from egg.core.smorms3 import SMORMS3
 from .distributed import maybe_init_distributed
 from .interaction import Interaction
 
@@ -184,6 +185,8 @@ def init(
         "adam": torch.optim.Adam,
         "sgd": torch.optim.SGD,
         "adagrad": torch.optim.Adagrad,
+        "rmsprop": torch.optim.RMSprop,
+        "smorms3": SMORMS3,
     }
     if common_opts.optimizer in optimizers:
         optimizer = optimizers[common_opts.optimizer]

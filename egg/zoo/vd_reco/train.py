@@ -11,6 +11,7 @@ import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
 
 import egg.core as core
+from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperAccuracy
 from .archs import (Receiver, ReinforcedReceiver, Sender)
 from .features import VariableData, FixedData
@@ -129,16 +130,16 @@ def main(params):
             receiver = core.ReinforceDeterministicWrapper(agent=receiver)
             game = core.SymbolGameReinforce(
                 sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff)
-        elif opts.mode == 'non_diff':
-            sender = core.ReinforceWrapper(agent=sender)
-            receiver = ReinforcedReceiver(
-                n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
-            receiver = core.SymbolReceiverWrapper(
-                receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
+        #  elif opts.mode == 'non_diff':
+        #      sender = core.ReinforceWrapper(agent=sender)
+        #      receiver = ReinforcedReceiver(
+        #          n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
+        #      receiver = core.SymbolReceiverWrapper(
+        #          receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
 
-            game = core.SymbolGameReinforce(sender, receiver, non_diff_loss,
-                                            sender_entropy_coeff=opts.sender_entropy_coeff,
-                                            receiver_entropy_coeff=opts.receiver_entropy_coeff)
+        #      game = core.SymbolGameReinforce(sender, receiver, non_diff_loss,
+        #                                      sender_entropy_coeff=opts.sender_entropy_coeff,
+        #                                      receiver_entropy_coeff=opts.receiver_entropy_coeff)
     else:
         raise NotImplementedError()
         #  if opts.mode != 'rf':
@@ -175,6 +176,10 @@ def main(params):
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(game.parameters(), lr=opts.lr,
                 betas=(opts.momentum, 0.999))
+    elif opts.optimizer == 'rmsprop':
+        optimizer = torch.optim.RMSprop(game.parameters(), lr=opts.lr, momentum=opts.momentum)
+    elif opts.optimizer == 'smorms3':
+        optimizer = SMORMS3(game.parameters(), lr=opts.lr)
     elif opts.optimizer == 'sgd':
         optimizer = torch.optim.SGD(game.parameters(), lr=opts.lr,
                 momentum=opts.momentum)
