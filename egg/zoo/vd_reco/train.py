@@ -172,7 +172,7 @@ def main(params):
 
         #  game = core.SenderReceiverRnnReinforce(
         #          sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff, receiver_entropy_coeff=opts.receiver_entropy_coeff)
-
+    print(game)
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(game.parameters(), lr=opts.lr,
                 betas=(opts.momentum, 0.999))

@@ -222,7 +222,22 @@ class Trainer:
                         if p.grad != None:
                             interaction.aux['grad_' + name] = torch.norm(p.grad).unsqueeze(0)
                     self.optimizer.step()
-
+                    if (isinstance(self.optimizer, torch.optim.Adam) or
+                        isinstance(self.optimizer, torch.optim.RMSprop)):
+                        if isinstance(self.optimizer, torch.optim.Adam):
+                            k = 'exp_avg_sq'
+                            # assume there is only one param_group
+                            beta_2 = self.optimizer.param_groups[0]['betas'][1]
+                            t = self.optimizer.state[p]['step']
+                            bias = (1. - beta_2**t) 
+                        else:
+                            k = 'square_avg'
+                            raise NotImplementedError()
+                            #  bias = 1.  # TODO!
+                        for name, p in self.game.named_parameters():
+                            if p.grad != None:
+                                var = (self.optimizer.state[p][k] / bias) 
+                                interaction.aux['mvar_' + name] = var.mean().unsqueeze(0)
                 self.optimizer.zero_grad()
 
             n_batches += 1
