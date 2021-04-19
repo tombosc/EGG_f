@@ -232,8 +232,9 @@ class Trainer:
                             bias = (1. - beta_2**t) 
                         else:
                             k = 'square_avg'
-                            raise NotImplementedError()
-                            #  bias = 1.  # TODO!
+                            alpha = self.optimizer.param_groups[0]['alpha']
+                            t = self.optimizer.state[p]['step']
+                            bias = (1. - alpha**t) 
                         for name, p in self.game.named_parameters():
                             if p.grad != None:
                                 var = (self.optimizer.state[p][k] / bias) 
