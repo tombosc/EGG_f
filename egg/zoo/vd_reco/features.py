@@ -22,17 +22,21 @@ class VariableData(data.Dataset):
         receiver_inputs = np.zeros((n_examples * (n_bits+1), n_bits))
 
         for i in range(n_bits):
-            examples[:, i] = np.bitwise_and(numbers, 2 ** i) > 0
+            examples[:, i] = ((np.bitwise_and(numbers, 2 ** i) > 0)*2)-1
 
         for i in range(n_bits+1):
             beg = i*n_examples
             end = (i+1)*n_examples
             sender_inputs[beg:end, 1:] = examples
+            # In order for a linear receiver to work, we need to have bits set
+            # to 1 and -1, and missing info set to 0! Otherwise, it needs to be
+            # non-linear to be able to interpret receiver_inputs in light of
+            # the message.
             receiver_inputs[beg:end] = examples
             # add num bits to transmit information
             sender_inputs[beg:end, 0] = i
-            # hide bits
-            receiver_inputs[beg:end, :i] = -1
+            receiver_inputs[beg:end, :i] = 0
+        # center num of bits available to receiver input given to sender
         sender_inputs[:, 0] = (2 * sender_inputs[:, 0] / float(n_bits)) - 1.
         self.sender_inputs = sender_inputs
         self.receiver_inputs = receiver_inputs
@@ -41,7 +45,8 @@ class VariableData(data.Dataset):
         return self.sender_inputs.shape[0]
 
     def __getitem__(self, i):
-        return self.sender_inputs[i], self.sender_inputs[i, 1:], self.receiver_inputs[i]
+        labels = (self.sender_inputs[i:, 1:] + 1) / 2
+        return self.sender_inputs[i], labels, self.receiver_inputs[i]
 
 
 class FixedData(data.Dataset):
@@ -54,9 +59,10 @@ class FixedData(data.Dataset):
         receiver_inputs = np.zeros((n_examples, n_bits))
 
         for i in range(n_bits):
-            sender_inputs[:, i] = np.bitwise_and(integers, 2 ** i) > 0
+            sender_inputs[:, i] = ((np.bitwise_and(integers, 2 ** i) > 0)*2) - 1
             if i < n_bits_receiver:
-                receiver_inputs[:, i] = np.bitwise_and(integers, 2 ** i) > 0
+                receiver_inputs[:, i] = sender_inputs[:, i]
+            # else, stays 0
 
         self.sender_inputs = sender_inputs
         self.receiver_inputs = receiver_inputs
@@ -65,4 +71,5 @@ class FixedData(data.Dataset):
         return self.sender_inputs.shape[0]
 
     def __getitem__(self, i):
-        return self.sender_inputs[i], self.sender_inputs[i], self.receiver_inputs[i]
+        labels = (self.sender_inputs[i] + 1) / 2
+        return self.sender_inputs[i], labels, self.receiver_inputs[i]

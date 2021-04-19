@@ -14,39 +14,25 @@ import egg.core as core
 class Receiver(nn.Module):
     def __init__(self, n_bits, n_hidden):
         super(Receiver, self).__init__()
-        #  self.emb_column = nn.Linear(n_bits, n_hidden)
         self.emb_column = core.RelaxedEmbedding(n_bits, n_hidden)
-        #  self.layer_norm_msg = nn.LayerNorm(n_hidden)
-        #  self.layer_norm_inp = nn.LayerNorm(n_hidden)
-        self.fc1 = nn.Linear(2 * n_hidden, 2 * n_hidden)
-        self.layer_norm = nn.LayerNorm(2 * n_hidden)
-        self.fc2 = nn.Linear(2 * n_hidden, n_bits)
-        #  self.fc1_message = nn.Linear(n_hidden, n_bits)
-        #  self.fc1_inputs = nn.Linear(n_hidden, n_bits)
+        self.layer_norm_msg = nn.LayerNorm(n_hidden)
+        self.layer_norm_inp = nn.LayerNorm(n_hidden)
+        self.fc1_message = nn.Linear(n_hidden, n_bits)
+        self.fc1_inputs = nn.Linear(n_hidden, n_bits)
 
     def forward(self, embedded_message, bits):
         embedded_bits = self.emb_column(bits.float())
-        # MLP version
-        #  embedded_bits = self.layer_norm_inp(embedded_bits)
-        #  embedded_message = self.layer_norm_msg(embedded_message)
-        x = torch.cat([embedded_bits, embedded_message], dim=1)
-        x = self.fc1(x)
-        x = F.relu(x)
-        x = self.layer_norm(x)
-        x = self.fc2(x)
-        return x.sigmoid()
-
-        # No MLP version
-        #  embedded_bits = self.layer_norm_inp(embedded_bits)
-        #  embedded_message = self.layer_norm_msg(embedded_message)
-        #  h1 = self.fc1_inputs(embedded_bits)
-        #  h2 = self.fc1_message(embedded_message)
-        #  logits = (h1 + h2).sigmoid()
+        embedded_bits = self.layer_norm_inp(embedded_bits)
+        embedded_message = self.layer_norm_msg(embedded_message)
+        h1 = self.fc1_inputs(embedded_bits)
+        h2 = self.fc1_message(embedded_message)
+        logits = (h1 + h2).sigmoid()
         return logits
 
 class ReinforcedReceiver(nn.Module):
     def __init__(self, n_bits, n_hidden):
         super(ReinforcedReceiver, self).__init__()
+        raise NotImplementedError()
         self.emb_column = nn.Linear(n_bits, n_hidden)
 
         self.fc1 = nn.Linear(2 * n_hidden, 2 * n_hidden)
@@ -83,19 +69,22 @@ class Sender(nn.Module):
         self.fc1 = nn.Linear(n_hidden, vocab_size)
         if predict_temperature:
             self.fc_temperature = nn.Sequential(  # untested
+                nn.Linear(n_hidden, n_hidden*2),
+                nn.ReLU(),
                 nn.Linear(n_hidden*2, 1),
-                nn.ReLU()
+                nn.ReLU(),
             )
         else:
             self.fc_temperature = None
         self.layer_norm = nn.LayerNorm(vocab_size)
-        assert(not predict_temperature and not fixed_mlp)
+        assert(not fixed_mlp)
 
     def forward(self, bits):
         x = self.emb(bits.float())
         h = self.fc1(x)
         h = self.layer_norm(h)
         if self.fc_temperature:
-            t = self.fc_temperature(h)*100
-            h = h / (t + 0.1)
+            t = self.fc_temperature(x)
+            print(t.min(), t.max())
+            h = h / (t + 0.2)
         return h

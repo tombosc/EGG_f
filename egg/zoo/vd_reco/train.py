@@ -115,6 +115,7 @@ def main(params):
             sender = core.GumbelSoftmaxWrapper(
                 agent=sender, temperature=opts.temperature,
                 trainable_temperature=opts.gs_train_temperature,
+                straight_through=True,
             )
             receiver = Receiver(n_bits=opts.n_bits,
                                 n_hidden=opts.receiver_hidden)
