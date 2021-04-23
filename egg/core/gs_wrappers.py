@@ -7,7 +7,7 @@ from typing import Callable, Optional
 import torch
 import torch.nn as nn
 import torch.nn.functional as F
-from torch.distributions import RelaxedOneHotCategorical
+from torch.distributions import RelaxedOneHotCategorical, Categorical
 
 from .interaction import LoggingStrategy
 
@@ -20,12 +20,15 @@ def gumbel_softmax_sample(
 ):
 
     size = logits.size()
+    cat_distrib = Categorical(logits=logits / temperature)
+    #  distrib = RelaxedOneHotCategorical(probs = cat_distrib.probs.mean(0))
+    distrib = Categorical(probs = cat_distrib.probs.mean(0))
     if not training:
         indexes = logits.argmax(dim=-1)
         one_hot = torch.zeros_like(logits).view(-1, size[-1])
         one_hot.scatter_(1, indexes.view(-1, 1), 1)
         one_hot = one_hot.view(*size)
-        return one_hot
+        return distrib, one_hot
 
     sample = RelaxedOneHotCategorical(logits=logits, temperature=temperature).rsample()
 
@@ -37,7 +40,7 @@ def gumbel_softmax_sample(
         hard_sample = hard_sample.view(*size)
 
         sample = sample + (hard_sample - sample).detach()
-    return sample
+    return distrib, sample
 
 
 class GumbelSoftmaxLayer(nn.Module):
@@ -107,10 +110,10 @@ class GumbelSoftmaxWrapper(nn.Module):
 
     def forward(self, *args, **kwargs):
         logits = self.agent(*args, **kwargs)
-        sample = gumbel_softmax_sample(
+        distrib, sample = gumbel_softmax_sample(
             logits, self.temperature, self.training, self.straight_through
         )
-        return sample
+        return distrib, sample
 
 
 class SymbolGameGS(nn.Module):
@@ -172,11 +175,11 @@ class SymbolGameGS(nn.Module):
         )
 
     def forward(self, sender_input, labels, receiver_input=None):
-        message = self.sender(sender_input)
+        distrib, message = self.sender(sender_input)
         receiver_output = self.receiver(message, receiver_input)
 
         loss, aux_info = self.loss(
-            sender_input, message, receiver_input, receiver_output, labels
+            sender_input, message, distrib, receiver_input, receiver_output, labels
         )
 
         logging_strategy = (
@@ -250,6 +253,7 @@ class SymbolReceiverWrapper(nn.Module):
         self.embedding = RelaxedEmbedding(vocab_size, agent_input_size)
 
     def forward(self, message, input=None):
+        print("WRAPPING", message.size())
         embedded_message = self.embedding(message)
         return self.agent(embedded_message, input)
 

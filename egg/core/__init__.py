@@ -21,6 +21,10 @@ from .gs_wrappers import (
     SymbolGameGS,
     SymbolReceiverWrapper,
 )
+from .relax_wrappers import (
+    RelaxSenderWrapper,
+    RelaxGame,
+)
 from .interaction import Interaction, LoggingStrategy
 from .language_analysis import (
     MessageEntropy,

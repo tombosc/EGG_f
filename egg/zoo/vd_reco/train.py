@@ -66,18 +66,35 @@ def get_params(params):
     #  assert args.n_examples_per_epoch % args.batch_size == 0
     return args
 
+def entropy(probs):
+    """ probs is bs, d
+    """
+    return - (probs.log() * probs).sum(1)
 
-def diff_loss(_sender_input, _message, _receiver_input, receiver_output, labels):
-    acc = ((receiver_output > 0.5).long() == labels).detach().all(dim=1).float()
+
+def diff_loss(_sender_input, _message, distrib_message, _receiver_input, receiver_output, labels):
+    print("RO", receiver_output.size())
+    pred_y = (receiver_output > 0.5).long()
+    acc = (pred_y == labels).detach().all(dim=1).float()
     loss = F.binary_cross_entropy(
         receiver_output, labels.float(), reduction="none").mean(dim=1)
-    return loss, {'acc': acc}
+    probs = distrib_message.probs
+    coef_H = 0
+    thresh = 0.8
+    if acc.float().mean() > thresh:
+        # TODO use distrib_message.entropy()?
+        H = entropy(probs.unsqueeze(0))
+        entropy_penalization = coef_H * H
+    else:
+        entropy_penalization = torch.zeros_like(acc)
+    loss += entropy_penalization
+    return loss, {'acc': acc, 'H_penal': entropy_penalization}
 
 
-def non_diff_loss(_sender_input, _message, _receiver_input, receiver_output, labels):
-    acc = ((receiver_output > 0.5).long() ==
-           labels).detach().all(dim=1).float()
-    return -acc, {'acc': acc.mean()}
+#  def non_diff_loss(_sender_input, _message, _receiver_input, receiver_output, labels):
+#      acc = ((receiver_output > 0.5).long() ==
+#             labels).detach().all(dim=1).float()
+#      return -acc, {'acc': acc.mean()}
 
 
 def main(params):
@@ -111,26 +128,29 @@ def main(params):
                         predict_temperature=opts.predict_temperature,
                         fixed_mlp=opts.fixed_mlp,
         )
+        receiver = Receiver(n_bits=opts.n_bits,
+                            n_hidden=opts.receiver_hidden)
         if opts.mode == 'gs':
             sender = core.GumbelSoftmaxWrapper(
                 agent=sender, temperature=opts.temperature,
                 trainable_temperature=opts.gs_train_temperature,
                 straight_through=True,
             )
-            receiver = Receiver(n_bits=opts.n_bits,
-                                n_hidden=opts.receiver_hidden)
             receiver = core.SymbolReceiverWrapper(
                 receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
             game = core.SymbolGameGS(sender, receiver, diff_loss)
         elif opts.mode == 'rf':
             sender = core.ReinforceWrapper(agent=sender)
-            receiver = Receiver(n_bits=opts.n_bits,
-                                n_hidden=opts.receiver_hidden)
             receiver = core.SymbolReceiverWrapper(
                 receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
             receiver = core.ReinforceDeterministicWrapper(agent=receiver)
             game = core.SymbolGameReinforce(
                 sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff)
+        elif opts.mode == 'relax':
+            sender = core.RelaxSenderWrapper(sender)  
+            receiver = core.SymbolReceiverWrapper(
+                receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
+            game = core.RelaxGame(sender, receiver, diff_loss)
         #  elif opts.mode == 'non_diff':
         #      sender = core.ReinforceWrapper(agent=sender)
         #      receiver = ReinforcedReceiver(
