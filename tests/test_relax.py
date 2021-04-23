@@ -106,17 +106,18 @@ def rebar(loss, log_theta, log_temp, eta, params_theta, net=None):
     # TODO how does it work when theta is produced by many parameters?
     #      is autograd.grad on each efficient, in that case? I don't think so,
     #      it should be a simple backward()?
-    log_p_b_grad, = autograd.grad([log_p_b], params_theta, create_graph=True,
-            retain_graph=True)
-    c_z_grad, = autograd.grad([c_z], params_theta, create_graph=True, retain_graph=True)
-    c_z_tilda_grad, = autograd.grad([c_z_tilda], params_theta, create_graph=True, retain_graph=True)
-    g = [(((loss(b) - eta * c_z_tilda) * log_p_b_g) +
+    log_p_b_grad, = autograd.grad([log_p_b], params_theta, create_graph=True)
+    c_z_grad, = autograd.grad([c_z], params_theta, create_graph=True)
+    c_z_tilda_grad, = autograd.grad([c_z_tilda], params_theta,
+            create_graph=True)
+    loss_b = loss(b)
+    g = [(((loss_b - eta * c_z_tilda) * log_p_b_g) +
          eta * (c_z_g - c_z_tilda_g)) for c_z_g, c_z_tilda_g, log_p_b_g in
              zip(c_z_grad, c_z_tilda_grad, log_p_b_grad)]
-    return g
+    return g, c_z_tilda, loss_b
 
 
-def one_run_relax(loss, eps, max_iter, estimator, lr, relax):
+def one_run_relax(loss, eps, max_iter, estimator, lr, relax, simplax):
     # minimize E_p(b)[(b-t)^2]
     log_theta = nn.Parameter(torch.tensor([0.]))
     log_temp = nn.Parameter(torch.tensor([0.]))
@@ -137,11 +138,15 @@ def one_run_relax(loss, eps, max_iter, estimator, lr, relax):
     optimizer_theta = torch.optim.Adam(params_theta, lr)#, momentum=0)
     i = 0
     for i in range(1, max_iter+1):
-        grads = estimator(loss, log_theta, log_temp, eta, params_theta, net=net)
+        grads, c_phi, loss_val = estimator(loss, log_theta, log_temp, eta, params_theta, net=net)
         for p, grad in zip(params_theta, grads):
             p.backward(grad)
-            var_loss = (grad**2).mean()
-            var_loss.backward()
+            if simplax == 0:
+                var_loss = (grad**2).mean()
+                var_loss.backward()
+        if simplax == 1:
+           l2_loss = ((c_phi - loss_val)**2).mean() 
+           l2_loss.backward()
         optimizer_theta.step()
         optimizer_phi.step()
         optimizer_phi.zero_grad()
@@ -175,22 +180,33 @@ if __name__ == '__main__':
     parser = argparse.ArgumentParser()
     parser.add_argument('--lr', default=0.01, type=float)
     parser.add_argument('--max-iter', default=1000, type=int)
-    parser.add_argument('-t', default=0.495, type=float)
+    parser.add_argument('-t', default=-1., type=float)
     parser.add_argument('estimator')
     args = parser.parse_args()
     torch.manual_seed(0)
     n = 5
-    u = 0.05
     max_iter = args.max_iter
-    #  true_theta = 0.50 + (torch.rand(n) * 2 * u) - u
-    true_theta = torch.tensor([(args.t,)*n]).squeeze()
+    if args.t == -1.:
+        u = 0.01
+        true_theta = 0.50 + (torch.rand(n) * 2 * u) - u
+    elif 0 < args.t < 1:
+        true_theta = torch.tensor([(args.t,)*n]).squeeze()
     for estimator in args.estimator.split(','):
+        print("Using estimator {}".format(estimator))
         if estimator == 'rf':
             eval_estimator(reinforce, one_run, true_theta, max_iter, args.lr)
         elif estimator == 'rebar':
             raise NotImplementedError()
-            runner = partial(one_run_relax, relax=False)
+            runner = partial(one_run_relax, relax=False, simplax=0)
             eval_estimator(rebar, runner, true_theta, max_iter, args.lr)
         elif estimator == 'relax':
-            runner = partial(one_run_relax, relax=True)
+            runner = partial(one_run_relax, relax=True, simplax=0)
             eval_estimator(rebar, runner, true_theta, max_iter, args.lr)
+        elif estimator == 'simplax':
+            runner = partial(one_run_relax, relax=True, simplax=1)
+            eval_estimator(rebar, runner, true_theta, max_iter, args.lr)
+        elif estimator == 'relax_no_opt':
+            runner = partial(one_run_relax, relax=True, simplax=-1)
+            eval_estimator(rebar, runner, true_theta, max_iter, args.lr)
+        else:
+            raise ValueError("Estimator {} not found.".format(estimator))
