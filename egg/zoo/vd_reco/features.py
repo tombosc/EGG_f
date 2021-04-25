@@ -45,7 +45,7 @@ class VariableData(data.Dataset):
         return self.sender_inputs.shape[0]
 
     def __getitem__(self, i):
-        labels = (self.sender_inputs[i:, 1:] + 1) / 2
+        labels = (self.sender_inputs[i, 1:] + 1) / 2
         return self.sender_inputs[i], labels, self.receiver_inputs[i]
 
 

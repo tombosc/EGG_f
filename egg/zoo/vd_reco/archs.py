@@ -65,8 +65,15 @@ class Sender(nn.Module):
             predict_temperature=False, fixed_mlp=False):
         super(Sender, self).__init__()
         self.emb = nn.Linear(n_bits, n_hidden)
+        self.layer_norm = nn.LayerNorm(n_hidden)
         self.vocab_size = vocab_size
         self.fc1 = nn.Linear(n_hidden, vocab_size)
+        #  self.fc1 = nn.Sequential(
+        #      nn.Linear(n_hidden, n_hidden),
+        #      nn.ReLU(),
+        #      nn.LayerNorm(n_hidden),
+        #      nn.Linear(n_hidden, vocab_size),
+        #  )
         if predict_temperature:
             self.fc_temperature = nn.Sequential(  # untested
                 nn.Linear(n_hidden, n_hidden*2),
@@ -76,13 +83,12 @@ class Sender(nn.Module):
             )
         else:
             self.fc_temperature = None
-        self.layer_norm = nn.LayerNorm(vocab_size)
         assert(not fixed_mlp)
 
     def forward(self, bits):
         x = self.emb(bits.float())
+        x = self.layer_norm(x)
         h = self.fc1(x)
-        h = self.layer_norm(h)
         if self.fc_temperature:
             t = self.fc_temperature(x)
             print(t.min(), t.max())

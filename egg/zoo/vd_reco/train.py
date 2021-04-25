@@ -9,6 +9,7 @@ import json
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
+from functools import partial
 
 import egg.core as core
 from egg.core.smorms3 import SMORMS3
@@ -37,6 +38,7 @@ def get_params(params):
                         help="Entropy regularisation coeff for Sender (default: 1e-2)")
     parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
                         help="Entropy regularisation coeff for Receiver (default: 1e-2)")
+    parser.add_argument('--entropy_coef', type=float, default=0.)
     parser.add_argument('--train_test_ratio', type=float, default=-1,
                         help="If -1, train and test are full data.")
 
@@ -72,19 +74,18 @@ def entropy(probs):
     return - (probs.log() * probs).sum(1)
 
 
-def diff_loss(_sender_input, _message, distrib_message, _receiver_input, receiver_output, labels):
-    print("RO", receiver_output.size())
+def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
+        receiver_output, labels, entropy_coef):
     pred_y = (receiver_output > 0.5).long()
     acc = (pred_y == labels).detach().all(dim=1).float()
-    loss = F.binary_cross_entropy(
-        receiver_output, labels.float(), reduction="none").mean(dim=1)
-    probs = distrib_message.probs
-    coef_H = 0
-    thresh = 0.8
+    loss = F.binary_cross_entropy( receiver_output, labels.float(), reduction="none").mean(dim=1)
+    #  probs = distrib_message.probs
+    thresh = 0.
     if acc.float().mean() > thresh:
         # TODO use distrib_message.entropy()?
-        H = entropy(probs.unsqueeze(0))
-        entropy_penalization = coef_H * H
+        #  H = entropy(probs.unsqueeze(0))
+        H = distrib_message.entropy().unsqueeze(0)
+        entropy_penalization = entropy_coef * H
     else:
         entropy_penalization = torch.zeros_like(acc)
     loss += entropy_penalization
@@ -121,7 +122,7 @@ def main(params):
         test_data = data
     train_loader = DataLoader(train_data, batch_size=opts.batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=opts.batch_size)
-
+    diff_loss = partial(diff_loss_, entropy_coef=opts.entropy_coef)
     if not opts.variable_length:
         sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
                         vocab_size=opts.vocab_size,
