@@ -1,0 +1,1 @@
+python -m egg.zoo.vd_reco.train --no_cuda --vocab_size 1024 --n_bits 4 --random_seed 2 --temperature 1.25 --batch_size 128 --lr 0.001 --sender_hidden=40 --receiver_hidden=40 --validation_freq 50 --mode='gs' --train_test_ratio -1.0 --variable_bits --entropy_coef 0.1 --n_epochs 5000 --optimizer='smorms3' > res_entropy_penalty_aa/example

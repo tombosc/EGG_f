@@ -17,7 +17,7 @@ from egg.core import EarlyStopperAccuracy
 from .archs import (Receiver, ReinforcedReceiver, Sender)
 from .features import VariableData, FixedData
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
-from .callbacks import ComputeEntropy, LogNorms, LRAnnealer
+from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis
 
 
 def get_params(params):
@@ -80,16 +80,41 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
     acc = (pred_y == labels).detach().all(dim=1).float()
     loss = F.binary_cross_entropy( receiver_output, labels.float(), reduction="none").mean(dim=1)
     #  probs = distrib_message.probs
-    thresh = 0.
-    if acc.float().mean() > thresh:
-        # TODO use distrib_message.entropy()?
-        #  H = entropy(probs.unsqueeze(0))
-        H = distrib_message.entropy().unsqueeze(0)
-        entropy_penalization = entropy_coef * H
-    else:
-        entropy_penalization = torch.zeros_like(acc)
+    thresh = 1.
+    # we're going to modulate entropy minimization by the cross-entropy loss:
+    # if cross-entropy is low, then entropy minimization is high
+    # TODO use distrib_message.entropy()?
+    #  H = entropy(probs.unsqueeze(0))
+    H = distrib_message.entropy().unsqueeze(1)
+    #  H_weight = (- torch.log(loss)).detach() * (loss < 1).detach() * entropy_coef
+    #  if loss.mean() < 0.1:
+    #      import pdb; pdb.set_trace()
+    #  H_weight = (1 / (loss+0.0001)) * entropy_coef
+    #  H_weight = (loss < 1.) * (1 - loss) * entropy_coef
+    # idea: we could encourage encourage entropy when the highest probability
+    # is < 0.5 + K... and decrease it when it is not the case. 2/ln(2)=2.88
+    #  H_weight = entropy_coef * (H * ((1 / (loss.detach() + 2e-2)) - 2.88)).mean(1)
+    #  H_weight = (H).mean(1)
+    #  import pdb; pdb.set_trace()
+    H_weight = (H * (torch.exp(-10*loss.detach() + 0.3) - 0.5).unsqueeze(1)).mean(1)
+    entropy_penalization = entropy_coef * (H_weight)
+    #  entropy_penalization = entropy_coef * (H_weight)
+    # TODO other idea: what happens when we only penalize entropy?
+    #  entropy_penalization = entropy_coef * (H).mean(1)
+    #  if entropy_penalization.mean().item() < 0.001:
+    #      import pdb; pdb.set_trace()
+
+    #  print("Hp", entropy_penalization)
+    #  else:
+    #      entropy_penalization = torch.zeros_like(acc)
     loss += entropy_penalization
-    return loss, {'acc': acc, 'H_penal': entropy_penalization}
+    logits = distrib_message.logits
+    return loss, {'acc': acc, 'H_penal': entropy_penalization, 
+            'logits_mean': torch.tensor([logits.mean()]),
+            'logits_median': torch.tensor([logits.median()]),
+            'logits_min': torch.tensor([logits.min()]),
+            'logits_max': torch.tensor([logits.max()]),
+    }
 
 
 #  def non_diff_loss(_sender_input, _message, _receiver_input, receiver_output, labels):
@@ -130,7 +155,8 @@ def main(params):
                         fixed_mlp=opts.fixed_mlp,
         )
         receiver = Receiver(n_bits=opts.n_bits,
-                            n_hidden=opts.receiver_hidden)
+                            n_hidden=opts.receiver_hidden,
+                            mlp=True)
         if opts.mode == 'gs':
             sender = core.GumbelSoftmaxWrapper(
                 agent=sender, temperature=opts.temperature,
@@ -195,15 +221,23 @@ def main(params):
         #  game = core.SenderReceiverRnnReinforce(
         #          sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff, receiver_entropy_coeff=opts.receiver_entropy_coeff)
     print(game)
+    #  rcv_params = set(game.receiver.agent.fc2[0].parameters()).union(set(game.receiver.agent.fc2[2].parameters()))
+    rcv_params = set([game.receiver.agent.fc2[2].weight, game.receiver.agent.fc2[0].weight])
+    other_params = set(game.parameters()) - rcv_params
+    #  print(len(rcv_params), len(other_params), len(game.parameters()))
+    params = [
+        {'params': list(other_params)},
+        {'params': list(rcv_params), 'weight_decay': 0.0},#, 'lr': 1e-4},
+    ]
     if opts.optimizer == 'adam':
-        optimizer = torch.optim.Adam(game.parameters(), lr=opts.lr,
+        optimizer = torch.optim.Adam(params, lr=opts.lr,
                 betas=(opts.momentum, 0.999))
     elif opts.optimizer == 'rmsprop':
-        optimizer = torch.optim.RMSprop(game.parameters(), lr=opts.lr, momentum=opts.momentum)
+        optimizer = torch.optim.RMSprop(params, lr=opts.lr, momentum=opts.momentum)
     elif opts.optimizer == 'smorms3':
-        optimizer = SMORMS3(game.parameters(), lr=opts.lr)
+        optimizer = SMORMS3(params, lr=opts.lr)
     elif opts.optimizer == 'sgd':
-        optimizer = torch.optim.SGD(game.parameters(), lr=opts.lr,
+        optimizer = torch.optim.SGD(params, lr=opts.lr,
                 momentum=opts.momentum)
     loss = game.loss
 
@@ -214,8 +248,8 @@ def main(params):
         test_loader, device=device, is_gs=opts.mode == 'gs',
         var_length=opts.variable_length, bin_by=bin_by)
     log_norms = LogNorms(game)
-
-    callbacks = [entropy_calculator, log_norms]
+    post_train_analysis = PostTrainAnalysis(game)
+    callbacks = [entropy_calculator, log_norms, post_train_analysis]
     if opts.optimizer == 'sgd':
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9999)
         callbacks.append(LRAnnealer(scheduler))

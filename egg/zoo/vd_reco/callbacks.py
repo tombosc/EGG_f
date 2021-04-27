@@ -2,6 +2,8 @@ import egg.core as core
 from egg.zoo.language_bottleneck.intervention import _hashable_tensor
 import numpy as np
 from collections import defaultdict
+from random import shuffle
+import torch
 
 
 def entropy_list(counts):
@@ -59,6 +61,51 @@ class ComputeEntropy(core.Callback):
         #  return dict(
         #      codewords_entropy=entropy_messages,
         #  )
+
+class PostTrainAnalysis(core.Callback):
+    def __init__(self, model):
+        super().__init__()
+        self.model = model
+
+    def on_test_end(self, _loss: float, _logs: core.Interaction, _epoch: int):
+        self.last_interaction = _logs
+        sdr_inputs = self.last_interaction.sender_input
+        labels = self.last_interaction.labels
+        messages = self.last_interaction.message
+        rcv_inputs = self.last_interaction.receiver_input
+        group_messages = defaultdict(list)
+        group_inputs = defaultdict(list)
+        groups = set()
+        for j, (m, sdr_i, rcv_i) in enumerate(zip(messages, sdr_inputs, rcv_inputs)):
+            group = sdr_i[0].item()
+            groups.add(group)
+            group_messages[group].append((m, j))
+            group_inputs[group].append((rcv_i, j))
+
+        # permute messages and inputs, compute accuracy several times
+        results = defaultdict(list)
+        self.model.eval()
+        with torch.no_grad():
+            for i in range(10):
+                for g in groups:
+                    m = group_messages[g]
+                    i = group_inputs[g]
+                    shuffle(m)
+                    shuffle(i)
+                    #  import pdb; pdb.set_trace()
+                    rcv_out = self.model.receiver(
+                        torch.vstack([e[0] for e in m]),
+                        torch.vstack([e[0] for e in i]),
+                    )
+                    label = labels[[e[1] for e in i]]
+                    pred_y = (rcv_out > 0.5).long()
+                    acc = (pred_y == label).float().mean(0)
+                    results[g].append(acc)
+        for g, l in results.items():
+            results[g] = np.vstack(l).mean(0).tolist()
+            print("acc{} = {}".format(g, results[g]))
+        #  import pdb; pdb.set_trace()
+
 
 class LogNorms(core.Callback):
     def __init__(self, model):

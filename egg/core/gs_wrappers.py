@@ -20,9 +20,9 @@ def gumbel_softmax_sample(
 ):
 
     size = logits.size()
-    cat_distrib = Categorical(logits=logits / temperature)
+    distrib = Categorical(logits=logits / temperature)
     #  distrib = RelaxedOneHotCategorical(probs = cat_distrib.probs.mean(0))
-    distrib = Categorical(probs = cat_distrib.probs.mean(0))
+    #  distrib = Categorical(probs = cat_distrib.probs.mean(0))
     if not training:
         indexes = logits.argmax(dim=-1)
         one_hot = torch.zeros_like(logits).view(-1, size[-1])
@@ -253,7 +253,6 @@ class SymbolReceiverWrapper(nn.Module):
         self.embedding = RelaxedEmbedding(vocab_size, agent_input_size)
 
     def forward(self, message, input=None):
-        print("WRAPPING", message.size())
         embedded_message = self.embedding(message)
         return self.agent(embedded_message, input)
 

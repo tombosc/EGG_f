@@ -12,13 +12,24 @@ import egg.core as core
 
 
 class Receiver(nn.Module):
-    def __init__(self, n_bits, n_hidden):
+    def __init__(self, n_bits, n_hidden, mlp):
         super(Receiver, self).__init__()
         self.emb_column = core.RelaxedEmbedding(n_bits, n_hidden)
         self.layer_norm_msg = nn.LayerNorm(n_hidden)
         self.layer_norm_inp = nn.LayerNorm(n_hidden)
-        self.fc1_message = nn.Linear(n_hidden, n_bits)
-        self.fc1_inputs = nn.Linear(n_hidden, n_bits)
+        self.mlp = mlp
+        if mlp:
+            fc1_out = n_hidden
+        else:
+            fc1_out = n_bits
+        self.fc1_message = nn.Linear(n_hidden, fc1_out)
+        self.fc1_inputs = nn.Linear(n_hidden, fc1_out)
+        if mlp:
+            self.fc2 = nn.Sequential(
+                nn.LayerNorm(n_hidden),
+                nn.ReLU(),
+                nn.Linear(n_hidden, n_bits),
+            )
 
     def forward(self, embedded_message, bits):
         embedded_bits = self.emb_column(bits.float())
@@ -26,8 +37,11 @@ class Receiver(nn.Module):
         embedded_message = self.layer_norm_msg(embedded_message)
         h1 = self.fc1_inputs(embedded_bits)
         h2 = self.fc1_message(embedded_message)
-        logits = (h1 + h2).sigmoid()
-        return logits
+        h = h1 + h2
+        if self.mlp:
+            return self.fc2(h).sigmoid()
+        else:
+            return h.sigmoid()
 
 class ReinforcedReceiver(nn.Module):
     def __init__(self, n_bits, n_hidden):
@@ -67,13 +81,13 @@ class Sender(nn.Module):
         self.emb = nn.Linear(n_bits, n_hidden)
         self.layer_norm = nn.LayerNorm(n_hidden)
         self.vocab_size = vocab_size
-        self.fc1 = nn.Linear(n_hidden, vocab_size)
-        #  self.fc1 = nn.Sequential(
-        #      nn.Linear(n_hidden, n_hidden),
-        #      nn.ReLU(),
-        #      nn.LayerNorm(n_hidden),
-        #      nn.Linear(n_hidden, vocab_size),
-        #  )
+        #  self.fc1 = nn.Linear(n_hidden, vocab_size)
+        self.fc1 = nn.Sequential(
+            nn.Linear(n_hidden, n_hidden),
+            nn.ReLU(),
+            nn.LayerNorm(n_hidden),
+            nn.Linear(n_hidden, vocab_size),
+        )
         if predict_temperature:
             self.fc_temperature = nn.Sequential(  # untested
                 nn.Linear(n_hidden, n_hidden*2),
@@ -93,4 +107,8 @@ class Sender(nn.Module):
             t = self.fc_temperature(x)
             print(t.min(), t.max())
             h = h / (t + 0.2)
-        return h
+        #  return h
+        #  return torch.clip(h, min=-10, max=10)
+        K = 8
+        h = h.sigmoid() * (2*K) - K
+        return h + 1e-8
