@@ -101,9 +101,15 @@ class PostTrainAnalysis(core.Callback):
                     pred_y = (rcv_out > 0.5).long()
                     acc = (pred_y == label).float().mean(0)
                     results[g].append(acc)
+        shuffle_accuracy_results = {}
         for g, l in results.items():
-            results[g] = np.vstack(l).mean(0).tolist()
-            print("acc{} = {}".format(g, results[g]))
+            mean = np.vstack(l).mean(0)
+            for bit, m in enumerate(mean):
+                field_name = 'shuflacc_'+ str(g) + '_' + str(bit)
+                shuffle_accuracy_results[field_name] = m
+            print("acc{} = {}".format(g, mean.tolist()))
+        _logs.aux.update(shuffle_accuracy_results)
+
         #  import pdb; pdb.set_trace()
 
 

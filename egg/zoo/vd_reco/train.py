@@ -50,18 +50,23 @@ def get_params(params):
                         action='store_true', default=False)
     parser.add_argument('--variable_bits',
                         action='store_true', default=False)
+    parser.add_argument('--sender_squash_output',
+                        type=float, default=0)
+    parser.add_argument('--sender_mlp',
+                        action='store_true', default=False)
+    parser.add_argument('--receiver_mlp',
+                        action='store_true', default=False)
     parser.add_argument('--predict_temperature',
                         action='store_true', default=False)
     parser.add_argument('--variable_length',
                         action='store_true', default=False)
     parser.add_argument('--sender_cell', type=str, default='rnn')
     parser.add_argument('--receiver_cell', type=str, default='rnn')
+    parser.add_argument('--symbol_dropout', type=float, default=0.0)
     parser.add_argument('--sender_emb', type=int, default=10,
                         help='Size of the embeddings of Sender (default: 10)')
     parser.add_argument('--receiver_emb', type=int, default=10,
                         help='Size of the embeddings of Receiver (default: 10)')
-    parser.add_argument('--fixed_mlp',
-                        action='store_true', default=False)
 
     args = core.init(arg_parser=parser, params=params)
 
@@ -80,12 +85,19 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
     acc = (pred_y == labels).detach().all(dim=1).float()
     loss = F.binary_cross_entropy( receiver_output, labels.float(), reduction="none").mean(dim=1)
     #  probs = distrib_message.probs
-    thresh = 1.
     # we're going to modulate entropy minimization by the cross-entropy loss:
     # if cross-entropy is low, then entropy minimization is high
     # TODO use distrib_message.entropy()?
     #  H = entropy(probs.unsqueeze(0))
-    H = distrib_message.entropy().unsqueeze(1)
+    #  H = distrib_message.entropy().unsqueeze(1)
+    H = distrib_message.entropy().unsqueeze(0)
+    ######## SIMPLE APPROACH
+    # if we use conditional entropy
+    #  entropy_penalization = entropy_coef * H.mean()
+    # if we use the approximate marginal entropy
+    entropy_penalization = (entropy_coef * H)
+    average_H = H.mean()
+    ######## END
     #  H_weight = (- torch.log(loss)).detach() * (loss < 1).detach() * entropy_coef
     #  if loss.mean() < 0.1:
     #      import pdb; pdb.set_trace()
@@ -96,8 +108,11 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
     #  H_weight = entropy_coef * (H * ((1 / (loss.detach() + 2e-2)) - 2.88)).mean(1)
     #  H_weight = (H).mean(1)
     #  import pdb; pdb.set_trace()
-    H_weight = (H * (torch.exp(-10*loss.detach() + 0.3) - 0.5).unsqueeze(1)).mean(1)
-    entropy_penalization = entropy_coef * (H_weight)
+    ######## ADAPTIVE APPROACH
+    #  H_weight = (H * (torch.exp(-20*loss.detach() + 1) - 0.5).unsqueeze(1)).mean(1)
+    #  entropy_penalization = entropy_coef * (H_weight)
+    #  average_H = H.mean()
+    ####### END
     #  entropy_penalization = entropy_coef * (H_weight)
     # TODO other idea: what happens when we only penalize entropy?
     #  entropy_penalization = entropy_coef * (H).mean(1)
@@ -110,6 +125,7 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
     loss += entropy_penalization
     logits = distrib_message.logits
     return loss, {'acc': acc, 'H_penal': entropy_penalization, 
+            'H_msg': average_H.unsqueeze(0),
             'logits_mean': torch.tensor([logits.mean()]),
             'logits_median': torch.tensor([logits.median()]),
             'logits_min': torch.tensor([logits.min()]),
@@ -151,12 +167,14 @@ def main(params):
     if not opts.variable_length:
         sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
                         vocab_size=opts.vocab_size,
+                        mlp=opts.sender_mlp,
                         predict_temperature=opts.predict_temperature,
-                        fixed_mlp=opts.fixed_mlp,
+                        symbol_dropout=opts.symbol_dropout,
+                        squash_output=opts.sender_squash_output,
         )
         receiver = Receiver(n_bits=opts.n_bits,
                             n_hidden=opts.receiver_hidden,
-                            mlp=True)
+                            mlp=opts.receiver_mlp)
         if opts.mode == 'gs':
             sender = core.GumbelSoftmaxWrapper(
                 agent=sender, temperature=opts.temperature,
@@ -221,14 +239,24 @@ def main(params):
         #  game = core.SenderReceiverRnnReinforce(
         #          sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff, receiver_entropy_coeff=opts.receiver_entropy_coeff)
     print(game)
+    ####### ATTEMPT 1: penalize fc2 of receiver.
     #  rcv_params = set(game.receiver.agent.fc2[0].parameters()).union(set(game.receiver.agent.fc2[2].parameters()))
-    rcv_params = set([game.receiver.agent.fc2[2].weight, game.receiver.agent.fc2[0].weight])
-    other_params = set(game.parameters()) - rcv_params
-    #  print(len(rcv_params), len(other_params), len(game.parameters()))
-    params = [
-        {'params': list(other_params)},
-        {'params': list(rcv_params), 'weight_decay': 0.0},#, 'lr': 1e-4},
-    ]
+    #  rcv_params = set([game.receiver.agent.fc2[2].weight, game.receiver.agent.fc2[0].weight])
+    #  other_params = set(game.parameters()) - rcv_params
+    #  params = [
+    #      {'params': list(rcv_params), 'weight_decay': 0.1},#, 'lr': 1e-4},
+    #      {'params': list(other_params)},
+    #  ]
+    ####### END
+    ####### ATTEMPT 2: penalize fc2 of sender to diminish entropy
+    #  sdr_params = set([game.sender.agent.fc1[3].weight, game.sender.agent.fc1[3].bias])
+    #  other_params = set(game.parameters()) - sdr_params
+    #  params = [
+    #      {'params': list(sdr_params), 'weight_decay': 0.1},#, 'lr': 1e-4},
+    #      {'params': list(other_params)},
+    #  ]
+    ####### END
+    params = game.parameters()
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=opts.lr,
                 betas=(opts.momentum, 0.999))

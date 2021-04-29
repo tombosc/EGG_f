@@ -55,6 +55,7 @@ if __name__ == '__main__':
                 cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
         
+        n_run += 1
         fn_output = os.path.join(args.exp_dir, H)
         if os.path.exists(fn_output):
             print("Already ran: " + " ".join(cmd))
@@ -67,4 +68,3 @@ if __name__ == '__main__':
                 main(cmd)
         if args.backup:
             shutil.copy(fn_output, os.path.join(args.backup, H))
-        n_run += 1

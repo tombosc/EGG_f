@@ -22,7 +22,7 @@ def gumbel_softmax_sample(
     size = logits.size()
     distrib = Categorical(logits=logits / temperature)
     #  distrib = RelaxedOneHotCategorical(probs = cat_distrib.probs.mean(0))
-    #  distrib = Categorical(probs = cat_distrib.probs.mean(0))
+    distrib = Categorical(probs = distrib.probs.mean(0))
     if not training:
         indexes = logits.argmax(dim=-1)
         one_hot = torch.zeros_like(logits).view(-1, size[-1])

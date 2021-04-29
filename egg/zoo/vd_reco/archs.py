@@ -19,16 +19,16 @@ class Receiver(nn.Module):
         self.layer_norm_inp = nn.LayerNorm(n_hidden)
         self.mlp = mlp
         if mlp:
-            fc1_out = n_hidden
+            fc1_out = n_hidden * 2
         else:
             fc1_out = n_bits
         self.fc1_message = nn.Linear(n_hidden, fc1_out)
         self.fc1_inputs = nn.Linear(n_hidden, fc1_out)
         if mlp:
             self.fc2 = nn.Sequential(
-                nn.LayerNorm(n_hidden),
                 nn.ReLU(),
-                nn.Linear(n_hidden, n_bits),
+                nn.LayerNorm(fc1_out),
+                nn.Linear(fc1_out, n_bits),
             )
 
     def forward(self, embedded_message, bits):
@@ -39,9 +39,8 @@ class Receiver(nn.Module):
         h2 = self.fc1_message(embedded_message)
         h = h1 + h2
         if self.mlp:
-            return self.fc2(h).sigmoid()
-        else:
-            return h.sigmoid()
+            h = self.fc2(h)
+        return h.sigmoid()
 
 class ReinforcedReceiver(nn.Module):
     def __init__(self, n_bits, n_hidden):
@@ -75,19 +74,28 @@ class ReinforcedReceiver(nn.Module):
 
 
 class Sender(nn.Module):
-    def __init__(self, vocab_size, n_bits, n_hidden,
-            predict_temperature=False, fixed_mlp=False):
+    def __init__(self, vocab_size, n_bits, n_hidden, mlp,
+            predict_temperature=False, symbol_dropout=0.0, 
+            squash_output=-1):
         super(Sender, self).__init__()
         self.emb = nn.Linear(n_bits, n_hidden)
         self.layer_norm = nn.LayerNorm(n_hidden)
         self.vocab_size = vocab_size
+        self.mlp = mlp
+        self.squash_output = squash_output
         #  self.fc1 = nn.Linear(n_hidden, vocab_size)
-        self.fc1 = nn.Sequential(
-            nn.Linear(n_hidden, n_hidden),
-            nn.ReLU(),
-            nn.LayerNorm(n_hidden),
-            nn.Linear(n_hidden, vocab_size),
-        )
+        if mlp:
+            fc1_out = n_hidden * 2
+        else:
+            fc1_out = vocab_size
+        self.fc1 = nn.Linear(n_hidden, fc1_out)
+        if mlp:
+            self.fc2 = nn.Sequential(
+                nn.ReLU(),
+                nn.LayerNorm(fc1_out),
+                nn.Linear(fc1_out, vocab_size),
+            )
+
         if predict_temperature:
             self.fc_temperature = nn.Sequential(  # untested
                 nn.Linear(n_hidden, n_hidden*2),
@@ -97,18 +105,29 @@ class Sender(nn.Module):
             )
         else:
             self.fc_temperature = None
-        assert(not fixed_mlp)
+        self.symbol_dropout = symbol_dropout
 
     def forward(self, bits):
         x = self.emb(bits.float())
         x = self.layer_norm(x)
         h = self.fc1(x)
+        if self.mlp:
+            h = self.fc2(h)
         if self.fc_temperature:
             t = self.fc_temperature(x)
             print(t.min(), t.max())
             h = h / (t + 0.2)
         #  return h
-        #  return torch.clip(h, min=-10, max=10)
-        K = 8
-        h = h.sigmoid() * (2*K) - K
-        return h + 1e-8
+        if self.squash_output > 0:
+            K = self.squash_output
+            h = (h.sigmoid() * (2*K)) - K
+        else:
+            K = 100
+        if self.training and self.symbol_dropout > 0:
+            #  h = h.detach()
+            prob = torch.empty(h[:, 0].size()).fill_(self.symbol_dropout)
+            mask = torch.bernoulli(prob).byte()
+            h[mask, 0] += K
+            h[mask, 1:] -= K
+            h[mask] = h[mask].detach()
+        return h 
