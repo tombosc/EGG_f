@@ -9,6 +9,7 @@ import json
 import torch
 import torch.nn.functional as F
 from torch.utils.data import DataLoader, random_split
+from torch.distributions import Categorical
 from functools import partial
 
 import egg.core as core
@@ -34,11 +35,13 @@ def get_params(params):
                         help="Momentum (β_1 for Adam)")
     parser.add_argument('--temperature', type=float, default=1.0,
                         help="GS temperature for the sender (default: 1.0)")
-    parser.add_argument('--sender_entropy_coeff', type=float, default=1e-2,
+    parser.add_argument('--sender_entropy_coef', type=float, default=0e-2,
                         help="Entropy regularisation coeff for Sender (default: 1e-2)")
-    parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
-                        help="Entropy regularisation coeff for Receiver (default: 1e-2)")
+    #  parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
+    #                      help="Entropy regularisation coeff for Receiver (default: 1e-2)")
     parser.add_argument('--entropy_coef', type=float, default=0.)
+    parser.add_argument('--conditional_entropy_coef',
+                        default=0.0, type=float)
     parser.add_argument('--train_test_ratio', type=float, default=-1,
                         help="If -1, train and test are full data.")
 
@@ -52,6 +55,7 @@ def get_params(params):
                         action='store_true', default=False)
     parser.add_argument('--sender_squash_output',
                         type=float, default=0)
+    parser.add_argument('--test_time_sampling', action='store_true', default=False)
     parser.add_argument('--sender_mlp',
                         action='store_true', default=False)
     parser.add_argument('--receiver_mlp',
@@ -80,7 +84,10 @@ def entropy(probs):
 
 
 def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
-        receiver_output, labels, entropy_coef):
+        receiver_output, labels, entropy_coef, conditional_entropy_coef):
+    """ distrib_message is a list of conditional distributions over
+    messages.
+    """
     pred_y = (receiver_output > 0.5).long()
     acc = (pred_y == labels).detach().all(dim=1).float()
     loss = F.binary_cross_entropy( receiver_output, labels.float(), reduction="none").mean(dim=1)
@@ -90,38 +97,21 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
     # TODO use distrib_message.entropy()?
     #  H = entropy(probs.unsqueeze(0))
     #  H = distrib_message.entropy().unsqueeze(1)
-    H = distrib_message.entropy().unsqueeze(0)
-    ######## SIMPLE APPROACH
-    # if we use conditional entropy
-    #  entropy_penalization = entropy_coef * H.mean()
-    # if we use the approximate marginal entropy
-    entropy_penalization = (entropy_coef * H)
-    average_H = H.mean()
-    ######## END
-    #  H_weight = (- torch.log(loss)).detach() * (loss < 1).detach() * entropy_coef
-    #  if loss.mean() < 0.1:
-    #      import pdb; pdb.set_trace()
-    #  H_weight = (1 / (loss+0.0001)) * entropy_coef
-    #  H_weight = (loss < 1.) * (1 - loss) * entropy_coef
-    # idea: we could encourage encourage entropy when the highest probability
-    # is < 0.5 + K... and decrease it when it is not the case. 2/ln(2)=2.88
-    #  H_weight = entropy_coef * (H * ((1 / (loss.detach() + 2e-2)) - 2.88)).mean(1)
-    #  H_weight = (H).mean(1)
-    #  import pdb; pdb.set_trace()
-    ######## ADAPTIVE APPROACH
-    #  H_weight = (H * (torch.exp(-20*loss.detach() + 1) - 0.5).unsqueeze(1)).mean(1)
-    #  entropy_penalization = entropy_coef * (H_weight)
-    #  average_H = H.mean()
-    ####### END
-    #  entropy_penalization = entropy_coef * (H_weight)
-    # TODO other idea: what happens when we only penalize entropy?
-    #  entropy_penalization = entropy_coef * (H).mean(1)
-    #  if entropy_penalization.mean().item() < 0.001:
-    #      import pdb; pdb.set_trace()
-
-    #  print("Hp", entropy_penalization)
-    #  else:
-    #      entropy_penalization = torch.zeros_like(acc)
+    # in order to get the empirical marginal distrib over messages, we average
+    # the conditionalprobabilities:
+    empirical_marginal_probs = distrib_message.probs.mean(0)
+    marginal = Categorical(probs = empirical_marginal_probs)
+    marg_H = marginal.entropy().unsqueeze(0)
+    # if entropy_coef > 0, marginal entropy is minimized
+    if conditional_entropy_coef:
+        # WARNING untested
+        entropy_penalization = entropy_coef * (
+            marg_H.repeat(pred_y.size(0)) -
+            distrib_message.entropy())
+        # if this option is set, we also maximize conditional entropy
+    else:
+        entropy_penalization = entropy_coef * marg_H
+    average_H = marg_H.mean()
     loss += entropy_penalization
     logits = distrib_message.logits
     return loss, {'acc': acc, 'H_penal': entropy_penalization, 
@@ -163,7 +153,10 @@ def main(params):
         test_data = data
     train_loader = DataLoader(train_data, batch_size=opts.batch_size, shuffle=True)
     test_loader = DataLoader(test_data, batch_size=opts.batch_size)
-    diff_loss = partial(diff_loss_, entropy_coef=opts.entropy_coef)
+    diff_loss = partial(diff_loss_,
+        entropy_coef=opts.entropy_coef,
+        conditional_entropy_coef=opts.conditional_entropy_coef,
+    )
     if not opts.variable_length:
         sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
                         vocab_size=opts.vocab_size,

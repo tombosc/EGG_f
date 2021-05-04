@@ -17,14 +17,16 @@ def gumbel_softmax_sample(
     temperature: float = 1.0,
     training: bool = True,
     straight_through: bool = False,
+    test_time_sampling: bool = False,
 ):
 
     size = logits.size()
     distrib = Categorical(logits=logits / temperature)
-    #  distrib = RelaxedOneHotCategorical(probs = cat_distrib.probs.mean(0))
-    distrib = Categorical(probs = distrib.probs.mean(0))
     if not training:
-        indexes = logits.argmax(dim=-1)
+        if test_time_sampling:
+            indexes = distrib.sample()
+        else:
+            indexes = logits.argmax(dim=-1)
         one_hot = torch.zeros_like(logits).view(-1, size[-1])
         one_hot.scatter_(1, indexes.view(-1, 1), 1)
         one_hot = one_hot.view(*size)
@@ -91,6 +93,7 @@ class GumbelSoftmaxWrapper(nn.Module):
         temperature=1.0,
         trainable_temperature=False,
         straight_through=False,
+        test_time_sampling=False,
     ):
         """
         :param agent: The agent to be wrapped. agent.forward() has to output log-probabilities over the vocabulary
@@ -101,6 +104,7 @@ class GumbelSoftmaxWrapper(nn.Module):
         super(GumbelSoftmaxWrapper, self).__init__()
         self.agent = agent
         self.straight_through = straight_through
+        self.test_time_sampling = test_time_sampling
         if not trainable_temperature:
             self.temperature = temperature
         else:
@@ -111,7 +115,8 @@ class GumbelSoftmaxWrapper(nn.Module):
     def forward(self, *args, **kwargs):
         logits = self.agent(*args, **kwargs)
         distrib, sample = gumbel_softmax_sample(
-            logits, self.temperature, self.training, self.straight_through
+            logits, self.temperature, self.training, self.straight_through,
+            self.test_time_sampling,
         )
         return distrib, sample
 
