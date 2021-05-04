@@ -16,54 +16,47 @@ def compute_grad(term, params):
     return autograd.grad([term], params, create_graph=True, retain_graph=True)
 
 
-def RELAX_builder(loss):
-    class RELAX(autograd.Function):
-        @staticmethod
-        def forward(ctx, b, z, distribution, log_temp, eta, net, params_theta):
-            # rebar_categorical(loss, logits, log_temp, eta, params_theta, net=None):
-            logits = distribution.logits
-            theta = distribution.probs
-            log_p_b = distribution.log_prob(b)
-            z_tilda = conditional_relax_categorical(logits, theta, b)
-            T = log_temp.exp()
-            # compute control variate
-            loss_b = loss(b)
-            c_z = loss(torch.softmax(z / T, dim=1)).mean()
-            #  print("Here, c_z={}, net={}".format(c_z.size(), net(z).size()))
-            c_z += net(z).mean()
-            c_z_tilda = loss(torch.softmax(z_tilda / T, dim=1)).mean()
-            c_z_tilda += net(z_tilda).mean()
-            ctx.save_for_backward(log_p_b, c_z, c_z_tilda, eta, loss_b, *params_theta)
-            return loss_b
+def relax(loss, b, z, distribution, log_temp, eta, net, params_theta):
+    logits = distribution.logits
+    theta = distribution.probs
+    log_p_b = distribution.log_prob(b)
+    z_tilda = conditional_relax_categorical(logits, theta, b)
+    T = log_temp.exp()
+    # compute control variate
+    loss_b, _ = loss(b)
+    c_z, _ = loss(torch.softmax(z / T, dim=1)).mean()
+    #  print("Here, c_z={}, net={}".format(c_z.size(), net(z).size()))
+    c_z += net(z).mean()
+    c_z_tilda, _ = loss(torch.softmax(z_tilda / T, dim=1)).mean()
+    c_z_tilda += net(z_tilda).mean()
+    ctx.save_for_backward(log_p_b, c_z, c_z_tilda, eta, loss_b, *params_theta)
+    return loss_b
 
 
-        @staticmethod
-        def backward(ctx, grad_output):
-            print("BACKW")
-            print(grad_output)
-            log_p_b, c_z, c_z_tilda, eta, loss_b, *params_theta = ctx.saved_tensors
-            print("params:", [p.size() for p in params_theta])
-            print("params:", [p.grad_fn for p in params_theta])
-            print("params:", [p.requires_grad for p in params_theta])
-            # TODO how to pass params_theta
-            import pdb; pdb.set_trace()
-            c_z_grad = compute_grad(c_z, params_theta)
-            c_z_tilda_grad = compute_grad(c_z_tilda, params_theta)
-            log_p_b_grad = compute_grad(log_p_b, params_theta)
+def backward_encoder(ctx, grad_output):
+    # function to be backward-hooked
+    print("BACKW")
+    print(grad_output)
+    log_p_b, c_z, c_z_tilda, eta, loss_b, *params_theta = ctx.saved_tensors
+    print("params:", [p.size() for p in params_theta])
+    print("params:", [p.grad_fn for p in params_theta])
+    print("params:", [p.requires_grad for p in params_theta])
+    c_z_grad = compute_grad(c_z, params_theta)
+    c_z_tilda_grad = compute_grad(c_z_tilda, params_theta)
+    log_p_b_grad = compute_grad(log_p_b, params_theta)
 
-            grads = estimator(loss, log_theta, log_temp, eta, params_theta, net=net)
-            for p, grad in zip(params_theta, grads):
-                print("GRAD", p)
-                p.backward(grad)
-                var_loss = (grad**2).mean()
-                var_loss.backward()
+    grads = estimator(loss, log_theta, log_temp, eta, params_theta, net=net)
+    for p, grad in zip(params_theta, grads):
+        print("GRAD", p)
+        p.backward(grad)
+    l2_loss = ((c_phi - loss_val)**2).mean() 
+    l2_loss.backward()
 
-            # compute gradient estimator
-            g = [(((loss_b - eta * c_z_tilda) * log_p_b_g) +
-                 eta * (c_z_g - c_z_tilda_g)) for c_z_g, c_z_tilda_g, log_p_b_g in
-                     zip(c_z_grad, c_z_tilda_grad, log_p_b_grad)]
-            return grad_output
-    return RELAX
+    # compute gradient estimator
+    g = [(((loss_b - eta * c_z_tilda) * log_p_b_g) +
+         eta * (c_z_g - c_z_tilda_g)) for c_z_g, c_z_tilda_g, log_p_b_g in
+             zip(c_z_grad, c_z_tilda_grad, log_p_b_grad)]
+    return grad_output
 
 def conditional_relax_bernoulli(log_theta, theta, b):
     """ sample from p(z|b, theta)
@@ -160,16 +153,6 @@ class RelaxSenderWrapper(nn.Module):
         """
         super(RelaxSenderWrapper, self).__init__()
         self.agent = agent
-        #  self.log_theta = nn.Parameter(torch.tensor([0.]))
-        #  self.log_temp = nn.Parameter(torch.tensor([0.]))
-        #  self.eta = nn.Parameter(torch.tensor([1.]))
-        #  self.control_variate = torch.nn.Sequential(
-        #      nn.Linear(1, 10),
-        #      nn.Tanh(),
-        #      nn.Linear(10, 1)
-        #  )
-        #  params_theta = [self.log_theta]
-        #  params_phi = [self.eta, self.log_temp] + list(self.control_variate)
 
     def forward(self, *args, **kwargs):
         logits = self.agent(*args, **kwargs)
@@ -232,19 +215,13 @@ class RelaxGame(nn.Module):
             message, receiver_input
         )
 
-        print("Furst call to loss:", message.size(), receiver_output.size())
+        print("1st call to loss:", message.size(), receiver_output.size())
         loss, aux_info = self.loss(
             sender_input, message, distribution, receiver_input, receiver_output, labels
         )
         
         #  if self.training:
         #      _verify_batch_sizes(loss, sender_log_prob, receiver_log_prob)
-
-        if self.training:
-            # TODO loss!
-            pass
-
-        #  full_loss = policy_loss + entropy_loss + loss.mean()
 
         receiver_entropy = distribution.entropy()
         aux_info["sender_entropy"] = distribution.entropy().detach()
@@ -277,6 +254,10 @@ class RelaxGame(nn.Module):
             )
             return loss.mean()
 
+        if self.training:
+            grads, c_z_tilda, loss_b = relax(
+                self.loss, b, z, distribution, log_temp, eta, net, params_theta
+            )
         relax = RELAX_builder(closure_loss)
         sender_params = list(self.sender.parameters())
         full_loss = relax.apply(message, z, distribution,

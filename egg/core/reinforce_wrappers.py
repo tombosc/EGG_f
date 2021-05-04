@@ -45,6 +45,7 @@ class ReinforceWrapper(nn.Module):
         logits = self.agent(*args, **kwargs)
 
         distr = Categorical(logits=logits)
+        marginal_distr = Categorical(probs = distr.probs.mean(0))
         entropy = distr.entropy()
 
         if self.training:
@@ -53,7 +54,7 @@ class ReinforceWrapper(nn.Module):
             sample = logits.argmax(dim=1)
         log_prob = distr.log_prob(sample)
 
-        return sample, log_prob, entropy
+        return sample, log_prob, entropy, marginal_distr
 
 
 def _verify_batch_sizes(loss, sender_probs, receiver_probs):
@@ -172,20 +173,24 @@ class SymbolGameReinforce(nn.Module):
         )
 
     def forward(self, sender_input, labels, receiver_input=None):
-        message, sender_log_prob, sender_entropy = self.sender(sender_input)
+        message, sender_log_prob, sender_entropy, sender_marginal_distr = self.sender(sender_input)
         receiver_output, receiver_log_prob, receiver_entropy = self.receiver(
-            message, receiver_input
+            message, receiver_input,
         )
 
+        # code copied from gumbel_softmax_sample
         loss, aux_info = self.loss(
-            sender_input, message, receiver_input, receiver_output, labels
+            sender_input, message, sender_marginal_distr, receiver_input,
+            receiver_output, labels,
         )
 
         if self.training:
             _verify_batch_sizes(loss, sender_log_prob, receiver_log_prob)
 
+        baseline_pred = self.baseline.predict(sender_input, loss.detach())
+        baseline_pred_detached = baseline_pred.detach()
         policy_loss = (
-            (loss.detach() - self.baseline.predict(loss.detach()))
+            (loss.detach() - baseline_pred_detached)
             * (sender_log_prob + receiver_log_prob)
         ).mean()  # noqa: E502
         entropy_loss = -(
@@ -193,12 +198,15 @@ class SymbolGameReinforce(nn.Module):
             + receiver_entropy.mean() * self.receiver_entropy_coeff
         )  # noqa: E502
 
-        if self.training:
-            self.baseline.update(loss.detach())
-
         full_loss = policy_loss + entropy_loss + loss.mean()
 
-        aux_info["baseline"] = self.baseline.predict(loss.detach())
+        if self.training:
+            loss_baseline = self.baseline.update(baseline_pred, loss.detach())
+            #  if loss_baseline:
+            #      full_loss += loss_baseline
+
+
+        aux_info["baseline"] = baseline_pred_detached
         aux_info["sender_entropy"] = sender_entropy.detach()
         aux_info["receiver_entropy"] = receiver_entropy.detach()
 
@@ -500,9 +508,11 @@ class SenderReceiverRnnReinforce(nn.Module):
         receiver_output, log_prob_r, entropy_r = self.receiver(
             message, receiver_input, message_length
         )
-
+        # code copied from gumbel_softmax_sample
+        distrib = Categorical(logits=logits)
+        distrib = Categorical(probs = distrib.probs.mean(0))
         loss, aux_info = self.loss(
-            sender_input, message, receiver_input, receiver_output, labels
+            sender_input, message, distrib, receiver_input, receiver_output, labels
         )
         if self.training:
             _verify_batch_sizes(loss, log_prob_s, log_prob_r)

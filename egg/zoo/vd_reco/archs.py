@@ -42,37 +42,6 @@ class Receiver(nn.Module):
             h = self.fc2(h)
         return h.sigmoid()
 
-class ReinforcedReceiver(nn.Module):
-    def __init__(self, n_bits, n_hidden):
-        super(ReinforcedReceiver, self).__init__()
-        raise NotImplementedError()
-        self.emb_column = nn.Linear(n_bits, n_hidden)
-
-        self.fc1 = nn.Linear(2 * n_hidden, 2 * n_hidden)
-        self.fc2 = nn.Linear(2 * n_hidden, n_bits)
-
-    def forward(self, embedded_message, bits):
-        embedded_bits = self.emb_column(bits.float())
-
-        x = torch.cat([embedded_bits, embedded_message], dim=1)
-        x = self.fc1(x)
-        x = F.leaky_relu(x)
-        x = self.fc2(x)
-
-        probs = x.sigmoid()
-
-        distr = Bernoulli(probs=probs)
-        entropy = distr.entropy()
-
-        if self.training:
-            sample = distr.sample()
-        else:
-            sample = (probs > 0.5).float()
-        log_prob = distr.log_prob(sample).sum(dim=1)
-        raise NotImplementedError()
-        #  return sample, log_prob, entropy
-
-
 class Sender(nn.Module):
     def __init__(self, vocab_size, n_bits, n_hidden, mlp,
             predict_temperature=False, symbol_dropout=0.0, 

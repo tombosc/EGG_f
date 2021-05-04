@@ -97,6 +97,8 @@ class PostTrainAnalysis(core.Callback):
                         torch.vstack([e[0] for e in m]),
                         torch.vstack([e[0] for e in i]),
                     )
+                    if type(rcv_out) == tuple:  # reinforce
+                        rcv_out = rcv_out[0]
                     label = labels[[e[1] for e in i]]
                     pred_y = (rcv_out > 0.5).long()
                     acc = (pred_y == label).float().mean(0)

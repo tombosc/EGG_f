@@ -10,14 +10,14 @@ import torch
 
 class Baseline(ABC):
     @abstractmethod
-    def update(self, loss: torch.Tensor) -> None:
+    def update(self, prediction: torch.Tensor, loss: torch.Tensor) -> None:
         """Update internal state according to the observed loss
         loss (torch.Tensor): batch of losses
         """
         pass
 
     @abstractmethod
-    def predict(self, loss: torch.Tensor) -> torch.Tensor:
+    def predict(self, sender_input: torch.Tensor, loss: torch.Tensor) -> torch.Tensor:
         """Return baseline for the loss
         Args:
             loss (torch.Tensor): batch of losses be baselined
@@ -31,10 +31,10 @@ class NoBaseline(Baseline):
     def __init__(self):
         super().__init__()
 
-    def update(self, loss: torch.Tensor) -> None:
+    def update(self, prediction: torch.Tensor, loss: torch.Tensor) -> None:
         pass
 
-    def predict(self, loss: torch.Tensor) -> torch.Tensor:
+    def predict(self, sender_input: torch.Tensor, loss: torch.Tensor) -> torch.Tensor:
         return torch.zeros(1, device=loss.device)
 
 
@@ -49,7 +49,7 @@ class MeanBaseline(Baseline):
         self.mean_baseline = torch.zeros(1, requires_grad=False)
         self.n_points = 0.0
 
-    def update(self, loss: torch.Tensor) -> None:
+    def update(self, prediction: torch.Tensor, loss: torch.Tensor) -> None:
         self.n_points += 1
         if self.mean_baseline.device != loss.device:
             self.mean_baseline = self.mean_baseline.to(loss.device)
@@ -58,10 +58,34 @@ class MeanBaseline(Baseline):
             loss.detach().mean().item() - self.mean_baseline
         ) / self.n_points
 
-    def predict(self, loss: torch.Tensor) -> torch.Tensor:
+    def predict(self, sender_input: torch.Tensor, loss: torch.Tensor) -> torch.Tensor:
         if self.mean_baseline.device != loss.device:
             self.mean_baseline = self.mean_baseline.to(loss.device)
         return self.mean_baseline
+
+
+class SenderLikeBaseline(Baseline):
+    """ Baseline is predicted by a neural net that has a similar architecture
+    than the sender.
+    """
+
+    def __init__(self, net):
+        super().__init__()
+        self.net = net
+        self.optimizer = torch.optim.Adam(self.net.parameters(), lr=3e-4, betas=(0.9, 0.999)) 
+
+    def update(self, prediction: torch.Tensor, loss: torch.Tensor) -> None:
+        loss = loss.detach().squeeze()
+        baseline_loss = ((prediction.squeeze() - loss)**2).mean()
+        baseline_loss.backward(retain_graph=True)
+        self.optimizer.step()
+        self.optimizer.zero_grad()
+        #  print("HH", baseline_loss)
+        return baseline_loss
+
+    def predict(self, sender_input: torch.Tensor, loss: torch.Tensor) -> torch.Tensor:
+        pred = self.net(sender_input)
+        return pred
 
 
 class BuiltInBaseline(Baseline):
@@ -73,10 +97,10 @@ class BuiltInBaseline(Baseline):
     def __init__(self):
         super().__init__()
 
-    def update(self, _: torch.Tensor) -> None:
+    def update(self, prediction: torch.Tensor, _: torch.Tensor) -> None:
         pass
 
-    def predict(self, loss: torch.Tensor) -> torch.Tensor:
+    def predict(self, sender_input: torch.Tensor, loss: torch.Tensor) -> torch.Tensor:
         if len(loss.size()) == 0 or loss.size(0) <= 1:
             return loss
         bsz = loss.size(0)

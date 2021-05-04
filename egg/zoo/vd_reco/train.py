@@ -5,6 +5,7 @@
 
 import argparse
 import json
+import copy
 
 import torch
 import torch.nn.functional as F
@@ -15,7 +16,8 @@ from functools import partial
 import egg.core as core
 from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperAccuracy
-from .archs import (Receiver, ReinforcedReceiver, Sender)
+from egg.core.baselines import MeanBaseline, SenderLikeBaseline
+from .archs import (Receiver, Sender)
 from .features import VariableData, FixedData
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis
@@ -128,6 +130,18 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
 #             labels).detach().all(dim=1).float()
 #      return -acc, {'acc': acc.mean()}
 
+def create_sender(opts):
+    if opts.variable_bits:
+        n_sender_inputs = opts.n_bits + 1
+    else:
+        n_sender_inputs = opts.n_bits
+    return Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
+        vocab_size=opts.vocab_size,
+        mlp=opts.sender_mlp,
+        predict_temperature=opts.predict_temperature,
+        symbol_dropout=opts.symbol_dropout,
+        squash_output=opts.sender_squash_output,
+    )
 
 def main(params):
     opts = get_params(params)
@@ -139,10 +153,8 @@ def main(params):
         if opts.bits_r != 4:
             raise ValueError("These are ignored when --variable_bits")
         data = VariableData(opts.n_bits)
-        n_sender_inputs = opts.n_bits + 1
     else:
         data = FixedData(opts.n_bits, opts.bits_r)
-        n_sender_inputs = opts.n_bits
 
     if opts.train_test_ratio != -1:
         train_size = int(opts.train_test_ratio * len(data))
@@ -158,13 +170,7 @@ def main(params):
         conditional_entropy_coef=opts.conditional_entropy_coef,
     )
     if not opts.variable_length:
-        sender = Sender(n_bits=n_sender_inputs, n_hidden=opts.sender_hidden,
-                        vocab_size=opts.vocab_size,
-                        mlp=opts.sender_mlp,
-                        predict_temperature=opts.predict_temperature,
-                        symbol_dropout=opts.symbol_dropout,
-                        squash_output=opts.sender_squash_output,
-        )
+        sender = create_sender(opts)
         receiver = Receiver(n_bits=opts.n_bits,
                             n_hidden=opts.receiver_hidden,
                             mlp=opts.receiver_mlp)
@@ -173,32 +179,37 @@ def main(params):
                 agent=sender, temperature=opts.temperature,
                 trainable_temperature=opts.gs_train_temperature,
                 straight_through=True,
+                test_time_sampling=opts.test_time_sampling,
             )
             receiver = core.SymbolReceiverWrapper(
                 receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
             game = core.SymbolGameGS(sender, receiver, diff_loss)
-        elif opts.mode == 'rf':
-            sender = core.ReinforceWrapper(agent=sender)
+        elif opts.mode.startswith('rf'):
+            if opts.mode == 'rf':
+                baseline = MeanBaseline
+            elif opts.mode == 'rfn':
+                # the baseline will be a copy of the sender, except that it's
+                # last output will output a single scalar
+                opts_copy = copy.deepcopy(opts)
+                opts_copy.vocab_size = 1
+                baseline_net = create_sender(opts_copy)
+                baseline = lambda: SenderLikeBaseline(baseline_net)
+            else:
+                raise NotImplementedError()
+            sender = core.ReinforceWrapper(agent=sender)  # no baseline here
             receiver = core.SymbolReceiverWrapper(
                 receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
             receiver = core.ReinforceDeterministicWrapper(agent=receiver)
             game = core.SymbolGameReinforce(
-                sender, receiver, diff_loss, sender_entropy_coeff=opts.sender_entropy_coeff)
-        elif opts.mode == 'relax':
-            sender = core.RelaxSenderWrapper(sender)  
-            receiver = core.SymbolReceiverWrapper(
-                receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
-            game = core.RelaxGame(sender, receiver, diff_loss)
-        #  elif opts.mode == 'non_diff':
-        #      sender = core.ReinforceWrapper(agent=sender)
-        #      receiver = ReinforcedReceiver(
-        #          n_bits=opts.n_bits, n_hidden=opts.receiver_hidden)
+                sender, receiver, diff_loss,
+                sender_entropy_coeff=opts.sender_entropy_coeff,
+                baseline_type=baseline,
+            )
+        #  elif opts.mode == 'relax':
+        #      sender = core.RelaxSenderWrapper(sender)
         #      receiver = core.SymbolReceiverWrapper(
         #          receiver, vocab_size=opts.vocab_size, agent_input_size=opts.receiver_hidden)
-
-        #      game = core.SymbolGameReinforce(sender, receiver, non_diff_loss,
-        #                                      sender_entropy_coeff=opts.sender_entropy_coeff,
-        #                                      receiver_entropy_coeff=opts.receiver_entropy_coeff)
+        #      game = core.RelaxGame(sender, receiver, diff_loss)
     else:
         raise NotImplementedError()
         #  if opts.mode != 'rf':
@@ -249,7 +260,11 @@ def main(params):
     #      {'params': list(other_params)},
     #  ]
     ####### END
-    params = game.parameters()
+
+    params = list(game.parameters())
+    #  if opts.mode == 'rfn':
+    #      params += list(baseline_net.parameters())
+
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=opts.lr,
                 betas=(opts.momentum, 0.999))
