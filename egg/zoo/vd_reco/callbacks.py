@@ -26,13 +26,16 @@ def entropy(messages):
 
 
 class ComputeEntropy(core.Callback):
-    def __init__(self, dataset, is_gs, device, var_length, bin_by):
+    def __init__(self, dataset, is_gs, device, var_length, bin_by,
+            var_message_length):
         super().__init__()
         self.dataset = dataset
         self.device = device
         self.is_gs = is_gs
         self.var_length = var_length
         self.bin_by = bin_by
+        # used to log not only entropy, but also message lengths
+        self.var_message_length = var_message_length
      
     def on_test_end(self, _loss: float, _logs: core.Interaction, _epoch: int):
         game = self.trainer.game
@@ -46,6 +49,7 @@ class ComputeEntropy(core.Callback):
             core.dump_interactions(game, self.dataset, gs=self.is_gs, device=self.device,
                                       variable_length=self.var_length)
         binned_messages = defaultdict(list)
+        binned_lengths = defaultdict(list)
         for i in range(interactions.size):
             msg = interactions.message[i] 
             if self.bin_by >= 0:
@@ -53,11 +57,17 @@ class ComputeEntropy(core.Callback):
             else:
                 bin_ = 0  # no bin
             binned_messages[bin_].append(msg)
+            if self.var_message_length:
+                L = interactions.message_length[i]
+                binned_lengths[bin_].append(L)
 
-        entropy_messages = {}
+        stats = {}
         for bin_, msgs in binned_messages.items():
-            entropy_messages["entropy_" + str(bin_)] = entropy(msgs)
-        return entropy_messages
+            stats["entropy_" + str(bin_)] = entropy(msgs)
+            if self.var_message_length:
+                mean_L = torch.stack(binned_lengths[bin_]).mean().unsqueeze(0)
+                stats["length_" + str(bin_)] = mean_L
+        return stats
         #  return dict(
         #      codewords_entropy=entropy_messages,
         #  )

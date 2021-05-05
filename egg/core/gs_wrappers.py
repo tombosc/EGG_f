@@ -288,6 +288,7 @@ class RnnSenderGS(nn.Module):
         cell="rnn",
         trainable_temperature=False,
         straight_through=False,
+        symbol_dropout=0.,
     ):
         super(RnnSenderGS, self).__init__()
         self.agent = agent
@@ -300,6 +301,7 @@ class RnnSenderGS(nn.Module):
         self.sos_embedding = nn.Parameter(torch.zeros(embed_dim))
         self.embed_dim = embed_dim
         self.vocab_size = vocab_size
+        self.symbol_dropout = symbol_dropout
 
         if not trainable_temperature:
             self.temperature = temperature
@@ -333,6 +335,7 @@ class RnnSenderGS(nn.Module):
 
         e_t = torch.stack([self.sos_embedding] * prev_hidden.size(0))
         sequence = []
+        distribs = []
 
         for step in range(self.max_len):
             if isinstance(self.cell, nn.LSTMCell):
@@ -341,21 +344,31 @@ class RnnSenderGS(nn.Module):
                 h_t = self.cell(e_t, prev_hidden)
 
             step_logits = self.hidden_to_output(h_t)
-            x = gumbel_softmax_sample(
+            distrib, x = gumbel_softmax_sample(
                 step_logits, self.temperature, self.training, self.straight_through
             )
-
+            if self.training and self.symbol_dropout > 0:
+                prob = torch.empty(x[:, 0].size()).fill_(self.symbol_dropout)
+                prob = prob.to(x.device)
+                prob.masked_fill_(x[:, 0] == 1, 0)  # do not dropout eos!
+                mask = torch.bernoulli(prob).bool()
+                x[mask] = x[mask].detach()
+                x[mask, 1] = 1
+                x[mask, 0] = 0
+                x[mask, 2:] = 0
             prev_hidden = h_t
             e_t = self.embedding(x)
             sequence.append(x)
+            distribs.append(distrib)
 
         sequence = torch.stack(sequence).permute(1, 0, 2)
 
         eos = torch.zeros_like(sequence[:, 0, :]).unsqueeze(1)
         eos[:, 0, 0] = 1
         sequence = torch.cat([sequence, eos], dim=1)
+        distribs.append(None) # for EOS
 
-        return sequence
+        return sequence, distribs
 
 
 class RnnReceiverGS(nn.Module):
@@ -403,7 +416,6 @@ class RnnReceiverGS(nn.Module):
                 )
             else:
                 h_t = self.cell(e_t, prev_hidden)
-
             outputs.append(self.agent(h_t, input))
             prev_hidden = h_t
 
@@ -458,9 +470,15 @@ class SenderReceiverRnnGS(nn.Module):
             receiver_input: input of Receiver from the dataset
             receiver_output: output of Receiver
             labels: labels assigned to Sender's input data
-          and outputs a tuple of (1) a loss tensor of shape (batch size, 1) (2) the dict with auxiliary information
-          of the same shape. The loss will be minimized during training, and the auxiliary information aggregated over
-          all batches in the dataset.
+          and outputs a tuple of 
+            (1) a loss tensor of shape (batch size, 1) 
+            (2) another loss tensor of shape (batch size, 1)
+            (3) the dict with auxiliary information of the same shape.
+          The loss (1) and (2) will be minimized during training. Importantly,
+          (1) and (2) are accumulated differently: (1) is only considered once the eos token has been
+          emitted whereas (2) is accumulated until the eos token has been
+          emitted. loss and the auxiliary information aggregated over
+          all batches in the dataset. 
         :param length_cost: the penalty applied to Sender for each symbol produced
         :param train_logging_strategy, test_logging_strategy: specify what parts of interactions to persist for
             later analysis in the callbacks.
@@ -483,7 +501,7 @@ class SenderReceiverRnnGS(nn.Module):
         )
 
     def forward(self, sender_input, labels, receiver_input=None):
-        message = self.sender(sender_input)
+        message, distribs = self.sender(sender_input)
         receiver_output = self.receiver(message, receiver_input)
 
         loss = 0
@@ -495,9 +513,13 @@ class SenderReceiverRnnGS(nn.Module):
         aux_info = {}
         z = 0.0
         for step in range(receiver_output.size(1)):
-            step_loss, step_aux = self.loss(
+            #  print("STEP", step, len(distribs))
+            if step != (receiver_output.size(1) - 1):
+                assert(distribs[step] is not None)
+            step_loss, cumul_loss, step_aux, cumul_aux = self.loss(
                 sender_input,
                 message[:, step, ...],
+                distribs[step],
                 receiver_input,
                 receiver_output[:, step, ...],
                 labels,
@@ -506,11 +528,22 @@ class SenderReceiverRnnGS(nn.Module):
 
             add_mask = eos_mask * not_eosed_before
             z += add_mask
-            loss += step_loss * add_mask + self.length_cost * (1.0 + step) * add_mask
+            loss += (
+                step_loss * add_mask + 
+                cumul_loss * (not_eosed_before) +
+                self.length_cost * (1.0 + step) * add_mask
+            )
+            #  loss += step_loss * add_mask + self.length_cost * (1.0 + step) * add_mask
             expected_length += add_mask.detach() * (1.0 + step)
 
             for name, value in step_aux.items():
                 aux_info[name] = value * add_mask + aux_info.get(name, 0.0)
+            for name, value in cumul_aux.items():
+                prev_V = aux_info.get(name, None)
+                if prev_V is not None:
+                    aux_info[name] += value * (not_eosed_before)
+                else:
+                    aux_info[name] = value * (not_eosed_before)
 
             not_eosed_before = not_eosed_before * (1.0 - eos_mask)
 
@@ -528,8 +561,13 @@ class SenderReceiverRnnGS(nn.Module):
 
         for name, value in step_aux.items():
             aux_info[name] = value * not_eosed_before + aux_info.get(name, 0.0)
-
         aux_info["length"] = expected_length
+        mean_probs = []
+        for d in distribs:
+            if d:
+                mean_probs.append(d.probs.mean(0))
+        marginal = torch.stack(mean_probs).mean(0)
+        aux_info["H_m"] = Categorical(probs=marginal).entropy().unsqueeze(0)
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
