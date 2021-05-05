@@ -45,7 +45,6 @@ class ReinforceWrapper(nn.Module):
         logits = self.agent(*args, **kwargs)
 
         distr = Categorical(logits=logits)
-        marginal_distr = Categorical(probs = distr.probs.mean(0))
         entropy = distr.entropy()
 
         if self.training:
@@ -54,7 +53,7 @@ class ReinforceWrapper(nn.Module):
             sample = logits.argmax(dim=1)
         log_prob = distr.log_prob(sample)
 
-        return sample, log_prob, entropy, marginal_distr
+        return sample, log_prob, entropy, distr
 
 
 def _verify_batch_sizes(loss, sender_probs, receiver_probs):
@@ -510,7 +509,6 @@ class SenderReceiverRnnReinforce(nn.Module):
         )
         # code copied from gumbel_softmax_sample
         distrib = Categorical(logits=logits)
-        distrib = Categorical(probs = distrib.probs.mean(0))
         loss, aux_info = self.loss(
             sender_input, message, distrib, receiver_input, receiver_output, labels
         )
