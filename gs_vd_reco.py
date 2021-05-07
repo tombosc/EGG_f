@@ -6,6 +6,7 @@ import argparse
 import numpy as np
 import subprocess
 from egg.zoo.vd_reco.train import main
+from egg.zoo.vd_reco.train_vl import main as main_vl
 from contextlib import redirect_stdout
 from hashlib import sha256
 
@@ -16,6 +17,8 @@ if __name__ == '__main__':
     parser.add_argument('seed', type=int)
     parser.add_argument('n_runs', type=int)
     parser.add_argument('--backup', type=str, help='Backup to directory after each run.')
+    parser.add_argument('--cuda', default=False, action='store_true')
+    parser.add_argument('--variable_length', default=False, action='store_true')
     args = parser.parse_args()
 
     print("Running with seed", args.seed)
@@ -43,10 +46,11 @@ if __name__ == '__main__':
     while n_run < args.n_runs:
         #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
         #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
-        cmd = ['--no_cuda']
+        cmd = []
+        if not args.cuda:
+            cmd.append('--no_cuda')
         for k, v in hp.items():
             chosen_v = np.random.choice(v).item()
-            #print(k, chosen_v, type(chosen_v))
             if type(chosen_v) == bool:
                 if chosen_v:
                     cmd.append("--" + k)
@@ -58,7 +62,8 @@ if __name__ == '__main__':
         
         #continue
         fn_output = os.path.join(args.exp_dir, H)
-        backup_fn_output = os.path.join(args.backup, H)
+        if args.backup:
+            backup_fn_output = os.path.join(args.backup, H)
         if (os.path.exists(fn_output) or 
                 (args.backup and os.path.exists(backup_fn_output))):
             print("Already ran:", H)
@@ -67,11 +72,15 @@ if __name__ == '__main__':
         print(H)
         # need to write something in the backupfile! otherwise, several scripts
         # can start to compute the same run!
-        with open(backup_fn_output, 'w') as f:
-            f.write('Computation in process...')
+        if args.backup:
+            with open(backup_fn_output, 'w') as f:
+                f.write('Computation in process...')
         with open(fn_output, 'w') as f_out:
             with redirect_stdout(f_out):
-                main(cmd)
+                if args.variable_length:
+                    main_vl(cmd)
+                else:
+                    main(cmd)
         if args.backup:
             shutil.copy(fn_output, backup_fn_output)
         n_run += 1
