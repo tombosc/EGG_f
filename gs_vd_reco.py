@@ -46,7 +46,7 @@ if __name__ == '__main__':
         cmd = ['--no_cuda']
         for k, v in hp.items():
             chosen_v = np.random.choice(v).item()
-            print(k, chosen_v, type(chosen_v))
+            #print(k, chosen_v, type(chosen_v))
             if type(chosen_v) == bool:
                 if chosen_v:
                     cmd.append("--" + k)
@@ -54,17 +54,24 @@ if __name__ == '__main__':
                 cmd.append("--" + k)
                 cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
+        #print(H)
         
-        n_run += 1
+        #continue
         fn_output = os.path.join(args.exp_dir, H)
-        if os.path.exists(fn_output):
-            print("Already ran: " + " ".join(cmd))
+        backup_fn_output = os.path.join(args.backup, H)
+        if (os.path.exists(fn_output) or 
+                (args.backup and os.path.exists(backup_fn_output))):
+            print("Already ran:", H)
             continue
         print(' '.join(cmd))
         print(H)
-
+        # need to write something in the backupfile! otherwise, several scripts
+        # can start to compute the same run!
+        with open(backup_fn_output, 'w') as f:
+            f.write('Computation in process...')
         with open(fn_output, 'w') as f_out:
             with redirect_stdout(f_out):
                 main(cmd)
         if args.backup:
-            shutil.copy(fn_output, os.path.join(args.backup, H))
+            shutil.copy(fn_output, backup_fn_output)
+        n_run += 1
