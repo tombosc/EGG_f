@@ -18,6 +18,7 @@ from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperAccuracy
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_vl import (Receiver, Sender)
+from .gs_wrappers import SenderReceiverRnnGSST
 from .features import VariableData, FixedData
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis
@@ -38,6 +39,8 @@ def get_params(params):
                         help="Momentum (β_1 for Adam)")
     parser.add_argument('--temperature', type=float, default=1.0,
                         help="GS temperature for the sender (default: 1.0)")
+    parser.add_argument('--ada_len_cost_thresh', type=float, default=0.0)
+    parser.add_argument('--ada_H_cost_thresh', type=float, default=0.0)
     parser.add_argument('--sender_entropy_coeff', type=float, default=0e-2,
                         help="Entropy regularisation coeff for Sender (default: 1e-2)")
     parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
@@ -84,7 +87,7 @@ def entropy(probs):
 
 
 def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
-        receiver_output, labels, entropy_coef):
+        receiver_output, labels, entropy_coef, ada_H_cost_thresh):
     """ distrib_message is a list of conditional distributions over
     messages.
     """
@@ -100,7 +103,11 @@ def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
         distr_m_i = Categorical(probs = probs_m_i)
         H_m_i = distr_m_i.entropy()#.unsqueeze(0)
         # if entropy_coef > 0, marginal entropy is minimized
-        entropy_penalization = entropy_coef * H_m_i
+        if ada_H_cost_thresh:
+            H_coef = loss < ada_H_cost_thresh
+        else:
+            H_coef = 1
+        entropy_penalization = H_coef * entropy_coef * H_m_i
         loss += entropy_penalization
     else:
         # this should be used only with the eos token!
@@ -159,6 +166,7 @@ def main(params):
     test_loader = DataLoader(test_data, batch_size=opts.batch_size)
     diff_loss = partial(diff_loss_,
         entropy_coef=opts.entropy_coef,
+        ada_H_cost_thresh = opts.ada_H_cost_thresh,
     )
     #  if opts.mode != 'rf':
     #      print('Only mode=rf is supported atm')
@@ -207,8 +215,9 @@ def main(params):
         #  sender = core.RnnSenderReinforce(agent=sender, vocab_size=opts.vocab_size,
         #                            embed_dim=opts.sender_emb, hidden_size=opts.sender_hidden, max_len=opts.max_len, cell=opts.sender_cell)
     if opts.mode == 'gs':
-        game = core.SenderReceiverRnnGS(sender, receiver, diff_loss,
+        game = SenderReceiverRnnGSST(sender, receiver, diff_loss,
                 length_cost = opts.length_cost,
+                ada_len_cost_thresh = opts.ada_len_cost_thresh,
         )
 
     #  game = core.SenderReceiverRnnReinforce(
