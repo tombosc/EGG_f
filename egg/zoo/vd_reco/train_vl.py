@@ -37,6 +37,8 @@ def get_params(params):
                         help='Size of the hidden layer of Receiver (default: 10)')
     parser.add_argument('--momentum', type=float, default=0.9,
                         help="Momentum (β_1 for Adam)")
+    parser.add_argument('--adam_beta2', type=float, default=0.999,
+                        help="β_2 for Adam")
     parser.add_argument('--temperature', type=float, default=1.0,
                         help="GS temperature for the sender (default: 1.0)")
     parser.add_argument('--ada_len_cost_thresh', type=float, default=0.0)
@@ -230,7 +232,7 @@ def main(params):
 
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=opts.lr,
-                betas=(opts.momentum, 0.999))
+                betas=(opts.momentum, opts.adam_beta2))
     elif opts.optimizer == 'rmsprop':
         optimizer = torch.optim.RMSprop(params, lr=opts.lr, momentum=opts.momentum)
     elif opts.optimizer == 'smorms3':
@@ -248,8 +250,8 @@ def main(params):
         var_length=True, bin_by=bin_by, var_message_length=True)
     log_norms = LogNorms(game)
     post_train_analysis = PostTrainAnalysis(game)
-    every_10_epochs = [e*10 for e in range(1, 1000)]
-    interaction_saver = InteractionSaver(every_10_epochs, every_10_epochs)
+    last_epoch = [opts.n_epochs]
+    interaction_saver = InteractionSaver(last_epoch, last_epoch)
     callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     if opts.optimizer == 'sgd':
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9999)
