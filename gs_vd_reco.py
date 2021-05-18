@@ -49,6 +49,7 @@ if __name__ == '__main__':
         cmd = []
         if not args.cuda:
             cmd.append('--no_cuda')
+
         for k, v in hp.items():
             chosen_v = np.random.choice(v).item()
             if type(chosen_v) == bool:
@@ -58,6 +59,7 @@ if __name__ == '__main__':
                 cmd.append("--" + k)
                 cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
+        cmd += ['--checkpoint_dir', H + '_I']
         #print(H)
         
         #continue

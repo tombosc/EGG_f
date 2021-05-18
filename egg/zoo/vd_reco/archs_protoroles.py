@@ -413,7 +413,9 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         # TODO log the rest of recv in and out
         interaction = logging_strategy.filtered_interaction(
+            roleset=sender_input[0],
             sender_input=sender_input[1],
+            sender_input_to_send=sender_input[2],
             receiver_input=receiver_input[1].detach(),
             labels=labels[1],
             receiver_output=receiver_outputs.detach(),

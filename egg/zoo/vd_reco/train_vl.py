@@ -27,10 +27,8 @@ from egg.core.callbacks import InteractionSaver
 
 def get_params(params):
     parser = argparse.ArgumentParser()
-    parser.add_argument('--n_bits', type=int, default=8,
-                        help='')
-    parser.add_argument('--bits_r', type=int, default=4,
-                        help='')
+    parser.add_argument('--sender_nlayers', type=int, default=2)
+    parser.add_argument('--receiver_nlayers', type=int, default=2)
     parser.add_argument('--sender_hidden', type=int, default=10,
                         help='Size of the hidden layer of Sender (default: 10)')
     parser.add_argument('--receiver_hidden', type=int, default=10,
@@ -146,23 +144,23 @@ def main(params):
         ada_H_cost_thresh = opts.ada_H_cost_thresh,
     )
     if opts.sender_cell == 'tfm' and opts.mode == 'gs':
-        n_layers = 2
         receiver = Receiver(
             dim_emb=opts.sender_emb, dim_ff=opts.sender_hidden,
             vocab_size=opts.vocab_size, dropout=opts.dropout,
             max_len=opts.max_len,
-            n_layers=n_layers,
+            n_layers=opts.receiver_nlayers,
         )
         sender = Sender(
             dim_emb=opts.sender_emb, dim_ff=opts.sender_hidden,
             vocab_size=opts.vocab_size, dropout=opts.dropout,
             max_len=opts.max_len, 
-            n_layers=n_layers,
+            n_layers=opts.sender_nlayers,
         )
         sender = TransformerSenderGS(
             agent=sender, vocab_size=opts.vocab_size,
             embed_dim=opts.sender_emb, max_len=opts.max_len,
-            num_layers=n_layers, num_heads=8, hidden_size=opts.sender_hidden,
+            num_layers=opts.sender_nlayers,
+            num_heads=8, hidden_size=opts.sender_hidden,
             temperature=opts.temperature,
             dropout=opts.dropout,
         )
