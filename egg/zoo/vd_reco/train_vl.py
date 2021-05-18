@@ -86,20 +86,14 @@ def loss_roles(receiver_output_role, labels):
             reduction="none")
 
 
-def diff_loss_(_sender_input, _message, distrib_message, _receiver_input,
+def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
         receiver_output_objs, labels, entropy_coef, ada_H_cost_thresh):
     """ distrib_message is a list of conditional distributions over
     messages.
     """
     _, labels_objs, _ = labels
-    loss_objs = F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
+    return F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
             reduction="none").sum(1).sum(1)
-    return (loss_objs,
-            None, #  entropy_penalization,
-            {
-                'cross_entropy': loss_objs,
-                #  'acc': acc,
-            })
 
     #  pred_y = (receiver_output > 0.5).long()
     #  acc = (pred_y == labels).detach().all(dim=1).float()
@@ -147,7 +141,7 @@ def main(params):
     train_loader = DataLoader(train_data, batch_size=opts.batch_size)
             
     valid_loader = DataLoader(valid_data, batch_size=opts.batch_size)
-    diff_loss = partial(diff_loss_,
+    loss_objs_ = partial(loss_objs,
         entropy_coef=opts.entropy_coef,
         ada_H_cost_thresh = opts.ada_H_cost_thresh,
     )
@@ -174,7 +168,7 @@ def main(params):
         )
         game = SenderReceiverTransformerGS(sender, receiver, 
                 loss_roles=loss_roles,
-                loss_objs=diff_loss,
+                loss_objs=loss_objs_,
                 length_cost = opts.length_cost,
                 ada_len_cost_thresh = opts.ada_len_cost_thresh,
         )
@@ -202,14 +196,21 @@ def main(params):
 
     #  intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
     #                                   input_intervention=True)
-    bin_by = 0
+    def bin_by(sender_input_to_send):
+        return sender_input_to_send.sum().item()
+
     entropy_calculator = ComputeEntropy(
         valid_loader, device=device, is_gs=opts.mode == 'gs',
         var_length=True, bin_by=bin_by, var_message_length=True)
     log_norms = LogNorms(game)
     post_train_analysis = PostTrainAnalysis(game)
-    last_epoch = [opts.n_epochs]
-    interaction_saver = InteractionSaver(last_epoch, last_epoch)
+    freq_save = [opts.n_epochs]
+    assert(opts.checkpoint_dir)
+    interaction_saver = InteractionSaver(
+        freq_save, freq_save,
+        folder_path=opts.checkpoint_dir,
+    )
+    #  callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     if opts.optimizer == 'sgd':
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9999)

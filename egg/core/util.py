@@ -342,7 +342,7 @@ def load_interactions(file_path: str):
         exit(1)
 
 
-def find_lengths(messages: torch.Tensor) -> torch.Tensor:
+def find_lengths(messages: torch.Tensor, one_hot_encoded=False) -> torch.Tensor:
     """
     :param messages: A tensor of term ids, encoded as Long values, of size (batch size, max sequence length).
     :returns A tensor with lengths of the sequences, including the end-of-sequence symbol <eos> (in EGG, it is 0).
@@ -354,7 +354,10 @@ def find_lengths(messages: torch.Tensor) -> torch.Tensor:
     tensor([3, 6])
     """
     max_k = messages.size(1)
-    zero_mask = messages == 0
+    if one_hot_encoded:
+        zero_mask = messages[:, :, 0]
+    else:
+        zero_mask = messages == 0
     # a bit involved logic, but it seems to be faster for large batches than slicing batch dimension and
     # querying torch.nonzero()
     # zero_mask contains ones on positions where 0 occur in the outputs, and 1 otherwise
@@ -365,5 +368,4 @@ def find_lengths(messages: torch.Tensor) -> torch.Tensor:
 
     lengths = max_k - (zero_mask.cumsum(dim=1) > 0).sum(dim=1)
     lengths.add_(1).clamp_(max=max_k)
-
     return lengths

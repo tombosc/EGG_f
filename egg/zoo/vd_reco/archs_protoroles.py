@@ -14,7 +14,7 @@ _n_arg = 3
 class Embedder(nn.Module):
     def __init__(self, dim_emb, dropout, variant=1):
         super(Embedder, self).__init__()
-        dim_small_emb = 5
+        dim_small_emb = 10
         # TODO embedding should be higher, but how high?
         self.role_embedding = nn.Embedding(_n_roles, dim_small_emb)
         self.role_linear = nn.Linear(dim_small_emb, dim_emb)
@@ -108,7 +108,7 @@ class Receiver(nn.Module):
             dropout=dropout,
             activation=activation,
         )
-        self.out_role = nn.Linear(dim_emb, _n_roles)
+        #  self.out_role = nn.Linear(dim_emb, _n_roles)
         self.out_obj = nn.Linear(dim_emb, 4*18)
 
 
@@ -123,10 +123,10 @@ class Receiver(nn.Module):
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
         # TODO mask?
         y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1))
-        role_pred = self.out_role(y[0])
-        bs = role_pred.size(0)
+        #  role_pred = self.out_role(y[0])
+        bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
-        return role_pred, obj_pred
+        return obj_pred
 
 
 class TransformerSenderGS(nn.Module):
@@ -370,35 +370,44 @@ class SenderReceiverTransformerGS(nn.Module):
 
     def forward(self, sender_input, labels, receiver_input=None):
         message, distribs = self.sender(sender_input)
-        # TODO
-        #  L = find_lengths(message, one_hot_encoded=True)
-        L = message.size(1) - (message[:, :, 0]).sum(1)
+        # turn all tokens after the 1st eos has been emitted to eos
+        L = find_lengths(message, one_hot_encoded=True)
+        bs, max_len, _ = message.size()
+        mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1) >=
+                    L.unsqueeze(1))
+        message[:,:,0].masked_fill_(mask, 1)  # eos
+        message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
         receiver_outputs = self.receiver(message, receiver_input)
 
-        loss_roles = self.loss_roles(receiver_outputs[0], labels)
-        loss_objs, _, aux = self.loss_objs(
+        #  loss_roles = self.loss_roles(receiver_outputs[0], labels)
+        loss_objs = self.loss_objs(
             sender_input,
             message,
             distribs,
             receiver_input,
-            receiver_outputs[1],
+            receiver_outputs,  #  receiver_outputs[1],
             labels,
         )
         if self.ada_len_cost_thresh:
             length_loss_coef = loss_objs < self.ada_len_cost_thresh
         else:
             length_loss_coef = 1
+        unweighted_length_cost = (1 - message[:, :, 0]).sum(1)
+        weighted_length_cost = (self.length_cost * length_loss_coef *
+                unweighted_length_cost)
         loss = (
-            loss_roles +
+            #  loss_roles +
             loss_objs +
-            (self.length_cost * length_loss_coef * L)
+            weighted_length_cost
         )
 
-        aux_info = {}
-        for name, value in aux.items():
-            aux_info[name] = value # * add_mask + aux_info.get(name, 0.0)
+        aux = {}
+        aux["length"] = L.float()
+        #  aux["loss_roles"] = loss_roles
+        aux["loss_objs"] = loss_objs
+        aux["weighted_length_cost"] = weighted_length_cost
+        aux["sender_input_to_send"] = sender_input[2].float()
 
-        aux_info["length"] = L.float()
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
         )
@@ -407,10 +416,9 @@ class SenderReceiverTransformerGS(nn.Module):
             sender_input=sender_input[1],
             receiver_input=receiver_input[1].detach(),
             labels=labels[1],
-            receiver_output=receiver_outputs[1].detach(),
+            receiver_output=receiver_outputs.detach(),
             message=message.detach(),
             message_length=L.float().detach(),
-            aux=aux_info,
+            aux=aux,
         )
-
         return loss.mean(), interaction
