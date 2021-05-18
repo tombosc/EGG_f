@@ -89,7 +89,7 @@ class SenderReceiverRnnGSST(nn.Module):
 
             add_mask = eos_mask * not_eosed_before
             z += add_mask
-            if self.ada_len_cost_thresh:
+            if self.ada_len_cost_thresh > 0:
                 length_loss_coef = step_loss < self.ada_len_cost_thresh
             else:
                 length_loss_coef = 1

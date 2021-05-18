@@ -1,7 +1,7 @@
 {
   "variable_bits": [true],
   "vocab_size": [1024],
-  "n_bits": [8],
+  "n_bits": [4],
   "train_test_ratio": [0.5, -1],
   "n_epoch": [2000],
   "optimizer": ["sgd"],
