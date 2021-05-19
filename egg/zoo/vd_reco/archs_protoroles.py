@@ -373,7 +373,7 @@ class SenderReceiverTransformerGS(nn.Module):
         # turn all tokens after the 1st eos has been emitted to eos
         L = find_lengths(message, one_hot_encoded=True)
         bs, max_len, _ = message.size()
-        mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1) >=
+        mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1).to(message.device) >=
                     L.unsqueeze(1))
         message[:,:,0].masked_fill_(mask, 1)  # eos
         message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
@@ -405,6 +405,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["length"] = L.float()
         #  aux["loss_roles"] = loss_roles
         aux["loss_objs"] = loss_objs
+        aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost
         aux["sender_input_to_send"] = sender_input[2].float()
 
@@ -413,9 +414,7 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         # TODO log the rest of recv in and out
         interaction = logging_strategy.filtered_interaction(
-            roleset=sender_input[0],
             sender_input=sender_input[1],
-            sender_input_to_send=sender_input[2],
             receiver_input=receiver_input[1].detach(),
             labels=labels[1],
             receiver_output=receiver_outputs.detach(),
