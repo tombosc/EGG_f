@@ -127,6 +127,10 @@ def _populate_cl_params(arg_parser: argparse.ArgumentParser) -> argparse.Argumen
         action="store_true",
     )
 
+    arg_parser.add_argument('--no_distributed', default=False,
+        help="Disable distributed training",
+        action='store_true')
+
     return arg_parser
 
 

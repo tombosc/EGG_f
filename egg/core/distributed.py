@@ -32,6 +32,8 @@ def maybe_init_distributed(args) -> DistributedContext:
     context = DistributedContext(
         is_distributed=False, rank=0, local_rank=0, world_size=1, mode="none"
     )
+    if args.no_distributed:
+        return context
 
     launch_keys = ["MASTER_ADDR", "MASTER_PORT", "WORLD_SIZE", "RANK", "LOCAL_RANK"]
     slurm_keys = [
