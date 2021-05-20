@@ -46,7 +46,7 @@ if __name__ == '__main__':
     while n_run < args.n_runs:
         #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
         #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
-        cmd = []
+        cmd = ['--no_distributed']
         if not args.cuda:
             cmd.append('--no_cuda')
 
