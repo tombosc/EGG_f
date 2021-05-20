@@ -130,15 +130,25 @@ class CheckpointSaver(Callback):
         self,
         checkpoint_path: Union[str, pathlib.Path],
         checkpoint_freq: int = 1,
+        save_best = False,
         prefix: str = "",
     ):
         self.checkpoint_path = pathlib.Path(checkpoint_path)
         self.checkpoint_freq = checkpoint_freq
+        self.save_best = save_best
+        self.best_loss = float('inf')
         self.prefix = prefix
         self.epoch_counter = 0
 
+    def on_test_end(self, loss: float, logs: Interaction, epoch: int):
+        if self.save_best and (loss < self.best_loss):
+            filename = f"{self.prefix}_best" if self.prefix else "best"
+            self.save_checkpoint(filename=filename)
+            self.best_loss = loss
+
     def on_epoch_end(self, loss: float, logs: Interaction, epoch: int):
         self.epoch_counter = epoch
+
         if self.checkpoint_freq > 0 and (
             self.epoch_counter % self.checkpoint_freq == 0
         ):

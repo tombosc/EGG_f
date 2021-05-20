@@ -108,6 +108,7 @@ class Trainer:
                 checkpointer = CheckpointSaver(
                     checkpoint_path=self.checkpoint_path,
                     checkpoint_freq=common_opts.checkpoint_freq,
+                    save_best=common_opts.checkpoint_best,
                 )
                 self.callbacks.append(checkpointer)
 

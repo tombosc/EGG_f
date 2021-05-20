@@ -46,6 +46,14 @@ def _populate_cl_params(arg_parser: argparse.ArgumentParser) -> argparse.Argumen
         default=0,
         help="How often the checkpoints are saved",
     )
+
+    arg_parser.add_argument(
+        "--checkpoint_best",
+        default=False,
+        action='store_true',
+        help="Save best model (need --checkpoint_dir)",
+    )
+
     arg_parser.add_argument(
         "--validation_freq",
         type=int,

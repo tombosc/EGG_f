@@ -12,8 +12,9 @@ N_RUNS="10"
 EXP_BASENAME="${NAME}_sd${SEED}"
 TMP_EXP_DIR="${SLURM_TMPDIR}/bosctom/${EXP_BASENAME}"
 # the backup/final exp dir is not seed specific
-FINAL_EXP_DIR="res_${NAME}"
+FINAL_EXP_DIR="/network/tmp1/bosctom/EGG_f/res_${NAME}"
 mkdir -p $TMP_EXP_DIR
 mkdir -p $EXP_DIR
 echo $TMP_EXP_DIR $EXP_DIR
 python gs_vd_reco.py $TMP_EXP_DIR egg/zoo/vd_reco/hyperparam_grid/${NAME}.json $SEED $N_RUNS --cuda --variable_length --backup $FINAL_EXP_DIR
+cp -dr $TMP_EXP_DIR/* $FINAL_EXP_DIR/
