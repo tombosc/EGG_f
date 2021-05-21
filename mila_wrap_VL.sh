@@ -6,7 +6,7 @@ module load anaconda/3 pytorch/1.7
 
 source $HOME/venv_gra/bin/activate
 
-NAME="proto_1_adam"
+NAME="proto_2_adam"
 SEED=$1
 N_RUNS=$2
 EXP_BASENAME="${NAME}_sd${SEED}"
@@ -14,6 +14,7 @@ TMP_EXP_DIR="${SLURM_TMPDIR}/bosctom/${EXP_BASENAME}"
 # the backup/final exp dir is not seed specific
 FINAL_EXP_DIR="/network/tmp1/bosctom/EGG_f/res_${NAME}"
 mkdir -p $TMP_EXP_DIR
+mkdir -p $FINAL_EXP_DIR
 echo $TMP_EXP_DIR 
 # I think NCCL flag is not necessary anymore, since I've added --no_distribute
 NCCL_IB_DISABLE=1 python gs_vd_reco.py $TMP_EXP_DIR egg/zoo/vd_reco/hyperparam_grid/${NAME}.json $SEED $N_RUNS --cuda --variable_length --backup $FINAL_EXP_DIR

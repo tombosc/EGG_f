@@ -1,7 +1,7 @@
 #!/bin/sh
 
-#SBATCH --ntasks-per-node=4
-#SBATCH --ntasks=4
+#SBATCH --ntasks-per-node=3
+#SBATCH --ntasks=3
 #SBATCH --gres=gpu:rtx8000:1
 #SBATCH --cpus-per-task=2
 #SBATCH --mem=18G
