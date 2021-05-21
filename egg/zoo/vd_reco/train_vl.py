@@ -15,7 +15,7 @@ from functools import partial
 
 import egg.core as core
 from egg.core.smorms3 import SMORMS3
-from egg.core import EarlyStopperAccuracy
+from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_protoroles import (Sender, TransformerSenderGS, Receiver,
         SenderReceiverTransformerGS)
@@ -29,6 +29,7 @@ def get_params(params):
     parser = argparse.ArgumentParser()
     parser.add_argument('--sender_nlayers', type=int, default=2)
     parser.add_argument('--receiver_nlayers', type=int, default=2)
+    parser.add_argument('--patience', type=int, default=0)
     parser.add_argument('--sender_hidden', type=int, default=10,
                         help='Size of the hidden layer of Sender (default: 10)')
     parser.add_argument('--receiver_hidden', type=int, default=10,
@@ -163,6 +164,7 @@ def main(params):
             num_heads=8, hidden_size=opts.sender_hidden,
             temperature=opts.temperature,
             dropout=opts.dropout,
+            causal=False,  # causal shouldn't matter, b/c only use the last token
         )
         game = SenderReceiverTransformerGS(sender, receiver, 
                 loss_roles=loss_roles,
@@ -197,6 +199,7 @@ def main(params):
     def bin_by(sender_input_to_send):
         return sender_input_to_send.sum().item()
 
+
     entropy_calculator = ComputeEntropy(
         valid_loader, device=device, is_gs=opts.mode == 'gs',
         var_length=True, bin_by=bin_by, var_message_length=True)
@@ -210,6 +213,10 @@ def main(params):
     )
     #  callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
+    if opts.patience > 0:
+        early_stop = EarlyStopperNoImprovement(opts.patience, 'loss')
+        callbacks.append(early_stop)
+
     if opts.optimizer == 'sgd':
         scheduler = torch.optim.lr_scheduler.ExponentialLR(optimizer, 0.9999)
         callbacks.append(LRAnnealer(scheduler))
