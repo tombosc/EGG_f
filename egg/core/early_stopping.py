@@ -7,6 +7,7 @@ from typing import List, Tuple
 
 from .callbacks import Callback
 from .interaction import Interaction
+import operator
 
 
 class EarlyStopper(Callback):
@@ -38,6 +39,37 @@ class EarlyStopper(Callback):
         raise NotImplementedError()
 
 
+class EarlyStopperNoImprovement(EarlyStopper):
+    """
+    Stops when loss hasn't improved for "patience" epochs on validation set.
+    """
+    def __init__(self, patience: int, validation = True,
+    ) -> None:
+        """
+        :param patience: when it has been patience epochs that the loss has not
+        improved, stops.
+        """
+        super(EarlyStopperNoImprovement, self).__init__(validation)
+        self.patience = patience
+
+    def should_stop(self) -> bool:
+        if self.validation:
+            assert (
+                self.validation_stats
+            ), "Validation data must be provided for early stooping to work"
+            stats = self.validation_stats
+        else:
+            assert (
+                self.train_stats
+            ), "Training data must be provided for early stooping to work"
+            stats = self.train_stats
+
+        #  scores = [interac.aux[self.field_name] for _, interac in stats]
+        scores = [loss for loss, _ in stats]
+        min_idx, min_val = min(enumerate(scores), key=operator.itemgetter(1))
+        return min_idx + self.patience < len(scores)
+
+    
 class EarlyStopperAccuracy(EarlyStopper):
     """
     Implements early stopping logic that stops training when a threshold on a metric

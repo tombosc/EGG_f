@@ -219,9 +219,9 @@ class Trainer:
                     self.scaler.step(self.optimizer)
                     self.scaler.update()
                 else:
-                    for name, p in self.game.named_parameters():
-                        if p.grad != None:
-                            interaction.aux['grad_' + name] = torch.norm(p.grad).unsqueeze(0)
+                    #  for name, p in self.game.named_parameters():
+                    #      if p.grad != None:
+                    #          interaction.aux['grad_' + name] = torch.norm(p.grad).unsqueeze(0)
                     self.optimizer.step()
                     #  if (isinstance(self.optimizer, torch.optim.Adam) or
                     #      isinstance(self.optimizer, torch.optim.RMSprop)):

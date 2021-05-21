@@ -11,7 +11,7 @@ from .callbacks import (
     TemperatureUpdater,
     TensorboardLogger,
 )
-from .early_stopping import EarlyStopperAccuracy
+from .early_stopping import EarlyStopperAccuracy, EarlyStopperNoImprovement
 from .gs_wrappers import (
     GumbelSoftmaxWrapper,
     RelaxedEmbedding,
