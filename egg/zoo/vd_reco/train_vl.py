@@ -46,6 +46,9 @@ def get_params(params):
                         help="Entropy regularisation coeff for Sender (default: 1e-2)")
     parser.add_argument('--receiver_entropy_coeff', type=float, default=0e-2,
                         help="Entropy regularisation coeff for Receiver (default: 1e-2)")
+    parser.add_argument('--distance_reg_coef', type=float, default=0.0,
+                        help="To prevent attention from focusing far away from current position")
+
     parser.add_argument('--entropy_coef', type=float, default=0.)
     parser.add_argument('--length_cost', type=float, default=0.)
     parser.add_argument('--train_ratio', type=float, default=0.6)
@@ -150,6 +153,7 @@ def main(params):
             vocab_size=opts.vocab_size, dropout=opts.dropout,
             max_len=opts.max_len,
             n_layers=opts.receiver_nlayers,
+            distance_reg_coef=opts.distance_reg_coef,
         )
         sender = Sender(
             dim_emb=opts.sender_emb, dim_ff=opts.sender_hidden,
@@ -165,6 +169,7 @@ def main(params):
             temperature=opts.temperature,
             dropout=opts.dropout,
             causal=False,  # causal shouldn't matter, b/c only use the last token
+            distance_reg_coef=opts.distance_reg_coef,
         )
         game = SenderReceiverTransformerGS(sender, receiver, 
                 loss_roles=loss_roles,

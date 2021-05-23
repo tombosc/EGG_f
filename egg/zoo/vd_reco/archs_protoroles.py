@@ -11,6 +11,27 @@ from egg.core.util import find_lengths
 _n_roles = 1639
 _n_arg = 3
 
+
+def make_circulant(v):
+    """ Return circulant matrix out of vector.
+    """
+    n = v.size(0)
+    M = torch.zeros((n, n))
+    for i in range(n):
+        M[i, i:] = v[:n-i]
+        M[i, :i] = v[n-i:]
+    return M.to(v.device)
+
+
+def exponential_distance_vector(n, k):
+    assert(k>0)
+    # take exponential of distance
+    u = (torch.arange(n).float() * k).exp()
+    # take the negative, as it is going to only *discourage* attending to
+    # far-away positions, not *encourage* close positions
+    return - u + 1
+
+
 class Embedder(nn.Module):
     def __init__(self, dim_emb, dropout, variant=1):
         super(Embedder, self).__init__()
@@ -90,7 +111,8 @@ class Sender(nn.Module):
         return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask)
 
 class Receiver(nn.Module):
-    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len, n_layers=3, n_head=8):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
+            n_layers=3, n_head=8, distance_reg_coef=0.0):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
         self.pos_msg_embedding = nn.Parameter(
@@ -110,6 +132,10 @@ class Receiver(nn.Module):
         )
         #  self.out_role = nn.Linear(dim_emb, _n_roles)
         self.out_obj = nn.Linear(dim_emb, 4*18)
+        self.distance_reg_coef = distance_reg_coef
+        if distance_reg_coef > 0:
+            v = exponential_distance_vector(max_len+1, distance_reg_coef)
+            self.distance_matrix = make_circulant(v)
 
 
     def forward(self, msg, receiver_inputs):
@@ -121,8 +147,12 @@ class Receiver(nn.Module):
         role_emb, obj_emb = self.embedder(roleset, properties)
         #  import pdb; pdb.set_trace()
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
-        # TODO mask?
-        y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1))
+        if self.distance_reg_coef > 0:
+            attn_mask = self.distance_matrix.to(x.device)
+        else:
+            attn_mask = None
+        y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
+                     src_mask=attn_mask)
         #  role_pred = self.out_role(y[0])
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
@@ -145,6 +175,7 @@ class TransformerSenderGS(nn.Module):
         dropout,
         generate_style="standard",
         causal=True,
+        distance_reg_coef=0.0,
     ):
         """
         :param agent: the agent to be wrapped, returns the "encoder" state vector, which is the unrolled into a message
@@ -169,6 +200,10 @@ class TransformerSenderGS(nn.Module):
         assert generate_style in ["standard", "in-place"]
         self.generate_style = generate_style
         self.causal = causal
+        self.distance_reg_coef = distance_reg_coef
+        if distance_reg_coef > 0:
+            v = exponential_distance_vector(max_len+1, self.distance_reg_coef)
+            self.distance_matrix = make_circulant(v)
 
         assert max_len >= 1, "Cannot have a max_len below 1"
         self.max_len = max_len
@@ -220,9 +255,15 @@ class TransformerSenderGS(nn.Module):
                 attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
             else:
                 attn_mask = None
-            # TODO mask
+            if self.distance_reg_coef:
+                M = self.distance_matrix[:step+1, :step+1].to(device)
+                if attn_mask:
+                    attn_mask += M
+                else:
+                    attn_mask = M
+
             output = self.decoder(
-                input, encoder_state, # tgt_key_padding_mask=attn_mask
+                input, encoder_state, tgt_mask=attn_mask,
             )
             step_logits = self.embedding_to_vocab(output[-1])
             distrib, sample = gumbel_softmax_sample(
