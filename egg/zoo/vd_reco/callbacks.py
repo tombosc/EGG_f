@@ -4,6 +4,7 @@ import numpy as np
 from collections import defaultdict
 from random import shuffle
 import torch
+from egg.core.callbacks import InteractionSaver as InteractionSaverBase
 
 
 def entropy_list(counts):
@@ -143,4 +144,21 @@ class LRAnnealer(core.Callback):
     def on_test_end(self, _loss, _logs, _epoch):
         for group in self.scheduler.optimizer.param_groups:
             _logs.aux.update({'lr': np.asarray([group['lr']])})
+        
+class InteractionSaver(InteractionSaverBase):
+    def __init__(
+        self,
+        train_epochs=None,
+        test_epochs=None,
+        folder_path="./interactions",
+        save_early_stopping=False,
+    ):
+        super(InteractionSaver, self).__init__(train_epochs, test_epochs,
+                                               folder_path)
+        self.save_early_stopping = save_early_stopping
+
+    def on_early_stopping(self, train_loss, train_interaction, epoch,
+                          validation_loss, validation_interaction):
+        self.dump_interactions(train_interaction, "train", epoch, self.folder_path)
+        self.dump_interactions(validation_interaction, "validation", epoch, self.folder_path)
         

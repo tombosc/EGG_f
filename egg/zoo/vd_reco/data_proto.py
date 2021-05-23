@@ -109,9 +109,11 @@ class Data(data.Dataset):
         return tokens
 
 
-    def __init__(self, n_fillers=20, seed=0, n_max_args=3):
+    def __init__(self, n_fillers=20, seed=0, n_max_args=3, 
+                 fn="protoroles_eng_pb/protoroles_eng_pb_08302015.tsv",
+                 augment=True,
+        ):
         rng = np.random.default_rng(seed)
-        fn = "protoroles_eng_pb/protoroles_eng_pb_08302015.tsv"
         lines = []
         set_properties = set()
         with open(fn) as f:
@@ -142,14 +144,14 @@ class Data(data.Dataset):
         # we need to encode the roleset (the verb + an ID for polysemy) as an integer
         #  role_counters = Counter([vt.roleset for vt in verb_tokens.values()])
         rolesets = sorted(list(set([vt.roleset for vt in verb_tokens.values()])))
-        idx_roleset = {role: i for i, role in enumerate(rolesets)}
+        self.idx_roleset = {role: i for i, role in enumerate(rolesets)}
         examples = []
         # we have to iterate over the sorted keys to stay deterministic...
         sorted_keys = sorted(verb_tokens.keys())
         for k in sorted_keys:
             v = verb_tokens[k]
             # TODO only property differs!!! What is going on?
-            examples.append((v.properties, v.gram_funcs, idx_roleset[v.roleset]))
+            examples.append((v.properties, v.gram_funcs, self.idx_roleset[v.roleset]))
         # END
         # TMP
         #  role_counters = Counter([vt.roleset for vt in verb_tokens.values()])
@@ -162,15 +164,14 @@ class Data(data.Dataset):
         # - sub - obj
         # - obj - other
         # END TMP
-        # 0. First, we need to split our dataset into train, valid and test.
-        # That's b/c we don't want "partial inputs" to be divided in different
-        # parts of the splits.
-        # TODO!!! TODO TODO
         # 1. augment the dataset to hide some slots
         self.examples = []
-        self.tied_ids = []
+        # we're doing data augmentation. we want to make sure that augmented
+        # examples from a single original example are all gathered in the same
+        # split. that's what tied_ids is for.
+        self.tied_ids = []  
         for orig_example in examples:
-            new_examples = self.prepare_inputs(*orig_example)
+            new_examples = self.prepare_inputs(*orig_example, augment=augment)
             # for each verb token in the original dataset, we want to keep the
             # "augmented" ones (with partial inputs) in the same split, so we
             # need to store the ids
@@ -180,7 +181,7 @@ class Data(data.Dataset):
             self.examples.extend(new_examples)
 
     @staticmethod
-    def prepare_inputs(properties, gram_funcs, id_roleset):
+    def prepare_inputs(properties, gram_funcs, id_roleset, augment):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -194,30 +195,47 @@ class Data(data.Dataset):
         properties[properties == 3] = 2
         properties[properties == 5] = 3
 
+        # first, add the original example (see comments below)
+        def package_input(to_send, hide_all_receiver=False, hide_roleset=False): 
+            if hide_all_receiver:
+                incomplete_properties = np.zeros_like(properties)
+            else:
+                # the receiver sees the incomplete properties
+                incomplete_properties = properties.copy()
+                incomplete_properties *= (1 - to_send[1:, np.newaxis])
+            if hide_roleset:
+                rcv_roleset = 0
+            else: 
+                rcv_roleset = id_roleset + 1
+            receiver_input = (rcv_roleset, incomplete_properties)
+            labels = (id_roleset, properties, gram_funcs)
+            # the sender has the original input, + an indication of what to
+            # transmit to the receiver
+            sender_input = (id_roleset+1, properties, to_send)
+            return (sender_input, labels, receiver_input)
+        
         filled_roles = [i for i, f in enumerate(gram_funcs) if f != -1]
+
+        if not augment:
+            original_roles = (np.asarray(gram_funcs) >= 0).astype(np.int)
+            original_example = package_input(original_roles)
+            return [original_example]
+
         # equivalently, could have used properties with (==0).all(1)
         combinations_to_send = []
         for j in range(1, len(filled_roles) + 1):
             iter_ = itertools.combinations(filled_roles, j)
             combinations_to_send += list(iter_)
         new_examples = []
-        # first, add the original example (see comments below)
-
-        def package_input(incomplete_properties, to_send):
-            # the receiver has the corrupted input
-            receiver_input = (id_roleset, incomplete_properties)
-            labels = (id_roleset, properties, gram_funcs)
-            # the sender has the original input, + an indication of what to
-            # transmit to the receiver
-            sender_input = (id_roleset, properties, to_send)
-            return (sender_input, labels, receiver_input)
-
         for combination in combinations_to_send:
-            prop = properties.copy()
-            prop[combination, :] = 0
-            combination_array = np.zeros_like(gram_funcs)
-            combination_array[list(combination)] = 1
-            new_examples.append(package_input(prop, combination_array))
+            combination_array = np.zeros(1 + gram_funcs.shape[0], dtype=int)
+            combination_array[list([c+1 for c in combination])] = 1
+            # have to send part of the information
+            new_examples.append(package_input(combination_array))
+            # have to send all the information
+            combination_array[0] = 1
+            new_examples.append(package_input(combination_array.copy(),
+                hide_all_receiver=True, hide_roleset=True))
         return new_examples
 
     #  def analyse_role_distributions(self, selection, n_max_args):

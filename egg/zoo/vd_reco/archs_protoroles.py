@@ -11,12 +11,34 @@ from egg.core.util import find_lengths
 _n_roles = 1639
 _n_arg = 3
 
+
+def make_circulant(v):
+    """ Return circulant matrix out of vector.
+    """
+    n = v.size(0)
+    M = torch.zeros((n, n))
+    for i in range(n):
+        M[i, i:] = v[:n-i]
+        M[i, :i] = v[n-i:]
+    return M.to(v.device)
+
+
+def exponential_distance_vector(n, k):
+    assert(k>0)
+    # take exponential of distance
+    u = (torch.arange(n).float() * k).exp()
+    # take the negative, as it is going to only *discourage* attending to
+    # far-away positions, not *encourage* close positions
+    return - u + 1
+
+
 class Embedder(nn.Module):
     def __init__(self, dim_emb, dropout, variant=1):
         super(Embedder, self).__init__()
         dim_small_emb = 10
-        # TODO embedding should be higher, but how high?
-        self.role_embedding = nn.Embedding(_n_roles, dim_small_emb)
+        # we add 1 to the number of roles, b/c there is a "0" dummy role for
+        # when it's hidden
+        self.role_embedding = nn.Embedding(_n_roles+1, dim_small_emb)
         self.role_linear = nn.Linear(dim_small_emb, dim_emb)
         # there are 18 properties per object, 
         # each taking 4 values (0: N/A, 1, 2, 3 for 1, 3, 5 on Likert scale
@@ -81,8 +103,8 @@ class Sender(nn.Module):
         # we do not mask the other positions, so that the sender can take into
         # account the other arguments that are visible to the receiver in order
         # to decide what to send (pragmatics)
-        obj_emb += (self.mark * marked.unsqueeze(2))
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
+        x += (self.mark * marked.unsqueeze(2))
         # on the other hand, the mask only masks out absent objects
         mask = torch.zeros_like(x[:, :, 0]).bool()
         mask[:, 1:] = (properties == 0).all(2)  # "pos with true are ignored"
@@ -90,7 +112,8 @@ class Sender(nn.Module):
         return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask)
 
 class Receiver(nn.Module):
-    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len, n_layers=3, n_head=8):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
+            n_layers=3, n_head=8, distance_reg_coef=0.0):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
         self.pos_msg_embedding = nn.Parameter(
@@ -108,8 +131,12 @@ class Receiver(nn.Module):
             dropout=dropout,
             activation=activation,
         )
-        #  self.out_role = nn.Linear(dim_emb, _n_roles)
+        self.out_role = nn.Linear(dim_emb, _n_roles)
         self.out_obj = nn.Linear(dim_emb, 4*18)
+        self.distance_reg_coef = distance_reg_coef
+        if distance_reg_coef > 0:
+            v = exponential_distance_vector(max_len+1, distance_reg_coef)
+            self.distance_matrix = make_circulant(v)
 
 
     def forward(self, msg, receiver_inputs):
@@ -121,12 +148,16 @@ class Receiver(nn.Module):
         role_emb, obj_emb = self.embedder(roleset, properties)
         #  import pdb; pdb.set_trace()
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
-        # TODO mask?
-        y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1))
-        #  role_pred = self.out_role(y[0])
+        if self.distance_reg_coef > 0:
+            attn_mask = self.distance_matrix.to(x.device)
+        else:
+            attn_mask = None
+        y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
+                     src_mask=attn_mask)
+        role_pred = self.out_role(y[0])
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
-        return obj_pred
+        return role_pred, obj_pred
 
 
 class TransformerSenderGS(nn.Module):
@@ -145,6 +176,7 @@ class TransformerSenderGS(nn.Module):
         dropout,
         generate_style="standard",
         causal=True,
+        distance_reg_coef=0.0,
     ):
         """
         :param agent: the agent to be wrapped, returns the "encoder" state vector, which is the unrolled into a message
@@ -169,6 +201,10 @@ class TransformerSenderGS(nn.Module):
         assert generate_style in ["standard", "in-place"]
         self.generate_style = generate_style
         self.causal = causal
+        self.distance_reg_coef = distance_reg_coef
+        if distance_reg_coef > 0:
+            v = exponential_distance_vector(max_len+1, self.distance_reg_coef)
+            self.distance_matrix = make_circulant(v)
 
         assert max_len >= 1, "Cannot have a max_len below 1"
         self.max_len = max_len
@@ -220,9 +256,15 @@ class TransformerSenderGS(nn.Module):
                 attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
             else:
                 attn_mask = None
-            # TODO mask
+            if self.distance_reg_coef:
+                M = self.distance_matrix[:step+1, :step+1].to(device)
+                if attn_mask:
+                    attn_mask += M
+                else:
+                    attn_mask = M
+
             output = self.decoder(
-                input, encoder_state, # tgt_key_padding_mask=attn_mask
+                input, encoder_state, tgt_mask=attn_mask,
             )
             step_logits = self.embedding_to_vocab(output[-1])
             distrib, sample = gumbel_softmax_sample(
@@ -379,13 +421,13 @@ class SenderReceiverTransformerGS(nn.Module):
         message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
         receiver_outputs = self.receiver(message, receiver_input)
 
-        #  loss_roles = self.loss_roles(receiver_outputs[0], labels)
+        loss_roles = self.loss_roles(receiver_outputs[0], labels)
         loss_objs = self.loss_objs(
             sender_input,
             message,
             distribs,
             receiver_input,
-            receiver_outputs,  #  receiver_outputs[1],
+            receiver_outputs[1],
             labels,
         )
         if self.ada_len_cost_thresh:
@@ -396,14 +438,14 @@ class SenderReceiverTransformerGS(nn.Module):
         weighted_length_cost = (self.length_cost * length_loss_coef *
                 unweighted_length_cost)
         loss = (
-            #  loss_roles +
+            loss_roles +
             loss_objs +
             weighted_length_cost
         )
 
         aux = {}
         aux["length"] = L.float()
-        #  aux["loss_roles"] = loss_roles
+        aux["loss_roles"] = loss_roles
         aux["loss_objs"] = loss_objs
         aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost
@@ -417,7 +459,7 @@ class SenderReceiverTransformerGS(nn.Module):
             sender_input=sender_input[1],
             receiver_input=receiver_input[1].detach(),
             labels=labels[1],
-            receiver_output=receiver_outputs.detach(),
+            receiver_output=receiver_outputs[1].detach(),
             message=message.detach(),
             message_length=L.float().detach(),
             aux=aux,
