@@ -196,15 +196,22 @@ class Data(data.Dataset):
         properties[properties == 5] = 3
 
         # first, add the original example (see comments below)
-        def package_input(to_send): 
-            # the receiver sees the incomplete properties
-            incomplete_properties = properties.copy()
-            incomplete_properties *= (1 - to_send[:, np.newaxis])
-            receiver_input = (id_roleset, incomplete_properties)
+        def package_input(to_send, hide_all_receiver=False, hide_roleset=False): 
+            if hide_all_receiver:
+                incomplete_properties = np.zeros_like(properties)
+            else:
+                # the receiver sees the incomplete properties
+                incomplete_properties = properties.copy()
+                incomplete_properties *= (1 - to_send[1:, np.newaxis])
+            if hide_roleset:
+                rcv_roleset = 0
+            else: 
+                rcv_roleset = id_roleset + 1
+            receiver_input = (rcv_roleset, incomplete_properties)
             labels = (id_roleset, properties, gram_funcs)
             # the sender has the original input, + an indication of what to
             # transmit to the receiver
-            sender_input = (id_roleset, properties, to_send)
+            sender_input = (id_roleset+1, properties, to_send)
             return (sender_input, labels, receiver_input)
         
         filled_roles = [i for i, f in enumerate(gram_funcs) if f != -1]
@@ -221,9 +228,14 @@ class Data(data.Dataset):
             combinations_to_send += list(iter_)
         new_examples = []
         for combination in combinations_to_send:
-            combination_array = np.zeros_like(gram_funcs)
-            combination_array[list(combination)] = 1
+            combination_array = np.zeros(1 + gram_funcs.shape[0], dtype=int)
+            combination_array[list([c+1 for c in combination])] = 1
+            # have to send part of the information
             new_examples.append(package_input(combination_array))
+            # have to send all the information
+            combination_array[0] = 1
+            new_examples.append(package_input(combination_array.copy(),
+                hide_all_receiver=True, hide_roleset=True))
         return new_examples
 
     #  def analyse_role_distributions(self, selection, n_max_args):

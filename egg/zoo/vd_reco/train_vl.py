@@ -21,8 +21,7 @@ from .archs_protoroles import (Sender, TransformerSenderGS, Receiver,
         SenderReceiverTransformerGS)
 from .data_proto import Data
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
-from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis
-from egg.core.callbacks import InteractionSaver
+from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis, InteractionSaver
 
 
 def get_params(params):
@@ -215,6 +214,7 @@ def main(params):
     interaction_saver = InteractionSaver(
         freq_save, freq_save,
         folder_path=opts.checkpoint_dir,
+        save_early_stopping=True,
     )
     #  callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
