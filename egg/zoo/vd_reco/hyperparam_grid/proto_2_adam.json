@@ -1,6 +1,7 @@
 {
   "vocab_size": [64],
   "max_len": [5],
+  "patience": [3],
   "sender_nlayers": [2,3,4],
   "receiver_nlayers": [2,3,4],
   "sender_emb": [32],
