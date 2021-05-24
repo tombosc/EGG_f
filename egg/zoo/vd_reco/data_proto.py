@@ -232,9 +232,10 @@ class Data(data.Dataset):
             combination_array[list([c+1 for c in combination])] = 1
             # have to send part of the information
             new_examples.append(package_input(combination_array))
+            combination_array_cpy = combination_array.copy()
             # have to send all the information
-            combination_array[0] = 1
-            new_examples.append(package_input(combination_array.copy(),
+            combination_array_cpy[0] = 1
+            new_examples.append(package_input(combination_array_cpy,
                 hide_all_receiver=True, hide_roleset=True))
         return new_examples
 
