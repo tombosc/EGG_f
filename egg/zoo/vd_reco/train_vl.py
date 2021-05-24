@@ -201,7 +201,8 @@ def main(params):
     #  intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
     #                                   input_intervention=True)
     def bin_by(sender_input_to_send):
-        return sender_input_to_send.sum().item()
+        return (sender_input_to_send[1:].sum().item() + 0.5 *
+                sender_input_to_send[0].item())
 
 
     entropy_calculator = ComputeEntropy(
