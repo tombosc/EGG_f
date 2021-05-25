@@ -6,7 +6,7 @@ module load anaconda/3 pytorch/1.7
 
 source $HOME/venv_gra/bin/activate
 
-NAME="proto_2_adam"
+NAME="proto_3_adam"
 SEED=$1
 N_RUNS=$2
 EXP_BASENAME="${NAME}_sd${SEED}"
