@@ -103,10 +103,13 @@ class Data(data.Dataset):
             else:
                 properties = verb_token.properties
             properties[arg, :] = vta.properties
+            #  if np.all(vta.properties == 0):
+            #      print("Error?")
+            #      print(vta)
             verb_token.gram_funcs[arg] = idx_gram_func[vta.gram_func]
         print("total sentences and verb tokens:", len(tokens))
         print("args count", count_args)
-        return tokens
+        return tokens, ordered_properties
 
 
     def __init__(self, n_fillers=20, seed=0, n_max_args=3, 
@@ -125,7 +128,8 @@ class Data(data.Dataset):
                 set_properties.add(line['Property'])
                 lines.append(line)
         # then, turn each one of them into a list of integers
-        verb_tokens = self.compactify(lines, set_properties, n_max_args)
+        verb_tokens, self.ordered_properties = \
+                self.compactify(lines, set_properties, n_max_args)
         # we can now group all verb tokens to get the distribution over types
         def present_roles(vt):
             #  n_total = vt.properties.shape[0]
@@ -217,7 +221,8 @@ class Data(data.Dataset):
         filled_roles = [i for i, f in enumerate(gram_funcs) if f != -1]
 
         if not augment:
-            original_roles = (np.asarray(gram_funcs) >= 0).astype(np.int)
+            original_roles = np.zeros(1 + gram_funcs.shape[0], dtype=int)
+            original_roles[1:] = (np.asarray(gram_funcs) >= 0)
             original_example = package_input(original_roles)
             return [original_example]
 
