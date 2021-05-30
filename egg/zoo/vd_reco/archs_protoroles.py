@@ -113,7 +113,7 @@ class Sender(nn.Module):
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
-            n_layers=3, n_head=8, distance_reg_coef=0.0):
+            n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
         self.pos_msg_embedding = nn.Parameter(
@@ -131,7 +131,10 @@ class Receiver(nn.Module):
             dropout=dropout,
             activation=activation,
         )
-        self.out_role = nn.Linear(dim_emb, _n_roles)
+        if predict_roleset:
+            self.out_role = nn.Linear(dim_emb, _n_roles)
+        else: 
+            self.out_role = None
         self.out_obj = nn.Linear(dim_emb, 4*18)
         self.distance_reg_coef = distance_reg_coef
         if distance_reg_coef > 0:
@@ -154,7 +157,10 @@ class Receiver(nn.Module):
             attn_mask = None
         y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
                      src_mask=attn_mask)
-        role_pred = self.out_role(y[0])
+        if self.out_role:
+            role_pred = self.out_role(y[0])
+        else:
+            role_pred = None
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
         return role_pred, obj_pred
@@ -421,7 +427,10 @@ class SenderReceiverTransformerGS(nn.Module):
         message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
         receiver_outputs = self.receiver(message, receiver_input)
 
-        loss_roles = self.loss_roles(receiver_outputs[0], labels)
+        if self.loss_roles:
+            loss_roles = self.loss_roles(receiver_outputs[0], labels)
+        else:
+            loss_roles = 0
         loss_objs = self.loss_objs(
             sender_input,
             message,
@@ -445,7 +454,8 @@ class SenderReceiverTransformerGS(nn.Module):
 
         aux = {}
         aux["length"] = L.float()
-        aux["loss_roles"] = loss_roles
+        if self.loss_roles:
+            aux["loss_roles"] = loss_roles
         aux["loss_objs"] = loss_objs
         aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost

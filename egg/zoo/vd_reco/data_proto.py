@@ -6,6 +6,8 @@ import csv
 from collections import defaultdict, namedtuple, Counter
 import itertools 
 from torch._utils import _accumulate
+from dataclasses import dataclass
+from simple_parsing.helpers import Serializable
 
 
 VerbTokenArg = namedtuple('VerbTokenArg',
@@ -18,6 +20,14 @@ VerbToken = namedtuple('VerbToken',
 class Data(data.Dataset):
     """ Proto-roles.
     """
+    @dataclass
+    class Settings(Serializable):
+        train_ratio: float = 0.7
+        valid_ratio: float = 0.1
+        dataset_seed: int = 0
+        shuffle_roles: bool = False
+        augment: str = 'basic'  # none or basic
+
     @staticmethod
     def compactify(L, set_properties, n_max_args):
         """ In L, every element contains a single property value for a certain
@@ -33,8 +43,6 @@ class Data(data.Dataset):
         n_prop = len(set_properties)
         arg_pos_per_key = defaultdict(set)
         for l in L:
-            #  if l['Sentence.ID'] == '2358_1' and l['Arg'] == '5':
-            #      import pdb; pdb.set_trace()
             arg = int(l['Arg'])
             if arg >= n_max_args:
                 continue
@@ -71,7 +79,9 @@ class Data(data.Dataset):
         compacted = {k: v for k, v in compacted.items() if k not in problematic_keys}
         for e in compacted.values():
             for i in range(e.properties.shape[0]):
-                # diminish # of categories...
+                # diminish # of categories: since ordinal data is treated as
+                # categorical data and 2 and 4 ratings are very rare, it is
+                # better to convert them.
                 if e.properties[i] == 2:
                     e.properties[i] = 1
                 if e.properties[i] == 4:
@@ -112,10 +122,14 @@ class Data(data.Dataset):
         return tokens, ordered_properties
 
 
-    def __init__(self, n_fillers=20, seed=0, n_max_args=3, 
+    def __init__(self, seed=0, n_max_args=3, 
                  fn="protoroles_eng_pb/protoroles_eng_pb_08302015.tsv",
-                 augment=True,
+                 augment="basic", shuffle_roles=False,
         ):
+        """
+        For values of augment, please see prepare_inputs
+        shuffle_roles: if True, for each verb, roles are going to be shuffled.
+        """
         rng = np.random.default_rng(seed)
         lines = []
         set_properties = set()
@@ -135,6 +149,7 @@ class Data(data.Dataset):
             #  n_total = vt.properties.shape[0]
             not_0 = tuple((vt.properties != 0).any(1))
             return not_0
+
         def n_roles(vt):
             #  n_total = vt.properties.shape[0]
             not_0 = (vt.properties != 0).any(1).sum()
@@ -152,22 +167,19 @@ class Data(data.Dataset):
         examples = []
         # we have to iterate over the sorted keys to stay deterministic...
         sorted_keys = sorted(verb_tokens.keys())
+        if shuffle_roles:
+            roleset_permutations = [rng.permutation(n_max_args) for _ in self.idx_roleset]
         for k in sorted_keys:
             v = verb_tokens[k]
-            # TODO only property differs!!! What is going on?
-            examples.append((v.properties, v.gram_funcs, self.idx_roleset[v.roleset]))
-        # END
-        # TMP
-        #  role_counters = Counter([vt.roleset for vt in verb_tokens.values()])
-        #  for roleset, n in role_counters.items():
-        #      if n < 10:
-        #          continue
-        #      selected_examples = [v for v in verb_tokens.values() if v.roleset == roleset]
-        #      self.analyse_role_distributions(selected_examples, n_max_args)
-        # For each role, we could compute a score indicating the average 
-        # - sub - obj
-        # - obj - other
-        # END TMP
+            i = self.idx_roleset[v.roleset]
+            if shuffle_roles:
+                perm = roleset_permutations[i]
+                properties = v.properties[perm]
+                gram_funcs = v.gram_funcs[perm]
+            else:
+                properties = v.properties
+                gram_funcs = v.gram_funcs
+            examples.append((properties, gram_funcs, i))
         # 1. augment the dataset to hide some slots
         self.examples = []
         # we're doing data augmentation. we want to make sure that augmented
@@ -220,29 +232,25 @@ class Data(data.Dataset):
         
         filled_roles = [i for i, f in enumerate(gram_funcs) if f != -1]
 
-        if not augment:
+        if augment == "none":
             original_roles = np.zeros(1 + gram_funcs.shape[0], dtype=int)
             original_roles[1:] = (np.asarray(gram_funcs) >= 0)
             original_example = package_input(original_roles)
             return [original_example]
+        
+        if augment == "basic":
+            combinations_to_send = []
+            for j in range(1, len(filled_roles) + 1):
+                iter_ = itertools.combinations(filled_roles, j)
+                combinations_to_send += list(iter_)
 
-        # equivalently, could have used properties with (==0).all(1)
-        combinations_to_send = []
-        for j in range(1, len(filled_roles) + 1):
-            iter_ = itertools.combinations(filled_roles, j)
-            combinations_to_send += list(iter_)
-        new_examples = []
-        for combination in combinations_to_send:
-            combination_array = np.zeros(1 + gram_funcs.shape[0], dtype=int)
-            combination_array[list([c+1 for c in combination])] = 1
-            # have to send part of the information
-            new_examples.append(package_input(combination_array))
-            combination_array_cpy = combination_array.copy()
-            # have to send all the information
-            combination_array_cpy[0] = 1
-            new_examples.append(package_input(combination_array_cpy,
-                hide_all_receiver=True, hide_roleset=True))
-        return new_examples
+            new_examples = []
+            for combination in combinations_to_send:
+                combination_array = np.zeros(1 + gram_funcs.shape[0], dtype=int)
+                combination_array[list([c+1 for c in combination])] = 1
+                # have to send part of the information
+                new_examples.append(package_input(combination_array))
+            return new_examples
 
     #  def analyse_role_distributions(self, selection, n_max_args):
     #      n_roles = np.zeros(n_max_args)

@@ -6,6 +6,7 @@
 import argparse
 import json
 import copy
+import os
 
 import torch
 import torch.nn.functional as F
@@ -19,20 +20,40 @@ from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_protoroles import (Sender, TransformerSenderGS, Receiver,
         SenderReceiverTransformerGS)
-from .data_proto import Data
+from .data_proto import Data as DataProto
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis, InteractionSaver
-
+from simple_parsing import ArgumentParser
 
 def get_params(params):
-    parser = argparse.ArgumentParser()
+    parser = ArgumentParser()
+    parser.add_argument('--dataset', type=str, default='proto',
+                        help="Right now, only 'proto' is supported")
+    dataset_args, unknown_args = parser.parse_known_args(params)
+    dataset = dataset_args.dataset
+    params = unknown_args
+    parser = ArgumentParser()
+    if dataset == 'proto':
+        parser.add_arguments(DataProto.Settings, dest="data")
+    else:
+        raise ValueError('Unknown dataset')
+    # ARCHITECTURE
     parser.add_argument('--sender_nlayers', type=int, default=2)
     parser.add_argument('--receiver_nlayers', type=int, default=2)
-    parser.add_argument('--patience', type=int, default=0)
     parser.add_argument('--sender_hidden', type=int, default=10,
                         help='Size of the hidden layer of Sender (default: 10)')
     parser.add_argument('--receiver_hidden', type=int, default=10,
                         help='Size of the hidden layer of Receiver (default: 10)')
+    parser.add_argument('--sender_cell', type=str, default='tfm')
+    parser.add_argument('--receiver_cell', type=str, default='tfm')
+    parser.add_argument('--dropout', type=float, default=0.1)
+    parser.add_argument('--sender_emb', type=int, default=10,
+                        help='Size of the embeddings of Sender (default: 10)')
+    parser.add_argument('--receiver_emb', type=int, default=10,
+                        help='Size of the embeddings of Receiver (default: 10)')
+
+    # OPTIMISATION
+    parser.add_argument('--patience', type=int, default=0)
     parser.add_argument('--momentum', type=float, default=0.9,
                         help="Momentum (β_1 for Adam)")
     parser.add_argument('--adam_beta2', type=float, default=0.999,
@@ -47,33 +68,15 @@ def get_params(params):
                         help="Entropy regularisation coeff for Receiver (default: 1e-2)")
     parser.add_argument('--distance_reg_coef', type=float, default=0.0,
                         help="To prevent attention from focusing far away from current position")
-
     parser.add_argument('--entropy_coef', type=float, default=0.)
     parser.add_argument('--length_cost', type=float, default=0.)
-    parser.add_argument('--train_ratio', type=float, default=0.6)
-    parser.add_argument('--valid_ratio', type=float, default=0.2)
-    parser.add_argument('--dataset_seed', type=int, default=0)
-
-    #  parser.add_argument('--optimizer', type=str, default='adam')
     parser.add_argument('--mode', type=str, default='gs',
                         help="Selects whether Reinforce or GumbelSoftmax relaxation is used for training {rf, gs,"
                              " non_diff} (default: gs)")
-    parser.add_argument('--test_time_sampling', action='store_true', default=False)
-    parser.add_argument('--predict_temperature',
-                        action='store_true', default=False)
-    parser.add_argument('--sender_cell', type=str, default='tfm')
-    parser.add_argument('--receiver_cell', type=str, default='tfm')
-    parser.add_argument('--dropout', type=float, default=0.1)
-    parser.add_argument('--symbol_dropout', type=float, default=0.0)
-    parser.add_argument('--sender_emb', type=int, default=10,
-                        help='Size of the embeddings of Sender (default: 10)')
-    parser.add_argument('--receiver_emb', type=int, default=10,
-                        help='Size of the embeddings of Receiver (default: 10)')
-
+    #  parser.add_argument('--test_time_sampling', action='store_true', default=False)
     args = core.init(arg_parser=parser, params=params)
-
     #  assert args.n_examples_per_epoch % args.batch_size == 0
-    return args
+    return dataset, args
 
 def entropy(probs):
     """ probs is bs, d
@@ -126,15 +129,17 @@ def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
 #      return -acc, {'acc': acc.mean()}
 
 def main(params):
-    opts = get_params(params)
+    dataset, opts = get_params(params)
     print(opts)
 
     device = opts.device
 
     data_gen = torch.Generator()
-    data = Data()
-    ratios = (opts.train_ratio, opts.valid_ratio,
-              1 - (opts.train_ratio + opts.valid_ratio))
+    if dataset == 'proto':
+        data = DataProto(seed=opts.data.dataset_seed, augment=opts.data.augment, 
+                         shuffle_roles=opts.data.shuffle_roles)
+    ratios = (opts.data.train_ratio, opts.data.valid_ratio,
+              1 - (opts.data.train_ratio + opts.data.valid_ratio))
     # test data will be used to test after model selection
     # prob in another script
     train_data, valid_data, _ = data.random_split(ratios, data_gen)
@@ -147,12 +152,14 @@ def main(params):
         ada_H_cost_thresh = opts.ada_H_cost_thresh,
     )
     if opts.sender_cell == 'tfm' and opts.mode == 'gs':
+        predict_roleset = False
         receiver = Receiver(
             dim_emb=opts.sender_emb, dim_ff=opts.sender_hidden,
             vocab_size=opts.vocab_size, dropout=opts.dropout,
             max_len=opts.max_len,
             n_layers=opts.receiver_nlayers,
             distance_reg_coef=opts.distance_reg_coef,
+            predict_roleset=predict_roleset,
         )
         sender = Sender(
             dim_emb=opts.sender_emb, dim_ff=opts.sender_hidden,
@@ -171,7 +178,7 @@ def main(params):
             distance_reg_coef=opts.distance_reg_coef,
         )
         game = SenderReceiverTransformerGS(sender, receiver, 
-                loss_roles=loss_roles,
+                loss_roles=loss_roles if predict_roleset else None,
                 loss_objs=loss_objs_,
                 length_cost = opts.length_cost,
                 ada_len_cost_thresh = opts.ada_len_cost_thresh,
@@ -217,6 +224,12 @@ def main(params):
         folder_path=opts.checkpoint_dir,
         save_early_stopping=True,
     )
+    # save data config
+    os.makedirs(opts.checkpoint_dir)  
+    dataset_json_path = os.path.join(opts.checkpoint_dir, 'data.json')
+    opts.data.save(dataset_json_path)
+    #  with open(dataset_json_path, 'w') as f:
+    #      f.write(opts.data.dumps_json())
     #  callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
     if opts.patience > 0:
