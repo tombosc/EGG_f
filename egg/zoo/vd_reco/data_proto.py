@@ -22,6 +22,7 @@ class Data(data.Dataset):
     """
     @dataclass
     class Settings(Serializable):
+        dataset: str = 'proto'  
         train_ratio: float = 0.7
         valid_ratio: float = 0.1
         dataset_seed: int = 0
@@ -168,12 +169,12 @@ class Data(data.Dataset):
         # we have to iterate over the sorted keys to stay deterministic...
         sorted_keys = sorted(verb_tokens.keys())
         if shuffle_roles:
-            roleset_permutations = [rng.permutation(n_max_args) for _ in self.idx_roleset]
+            self.roleset_permutations = [rng.permutation(n_max_args) for _ in self.idx_roleset]
         for k in sorted_keys:
             v = verb_tokens[k]
             i = self.idx_roleset[v.roleset]
             if shuffle_roles:
-                perm = roleset_permutations[i]
+                perm = self.roleset_permutations[i]
                 properties = v.properties[perm]
                 gram_funcs = v.gram_funcs[perm]
             else:
