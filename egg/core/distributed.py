@@ -23,15 +23,17 @@ class DistributedContext:
     def is_leader(self) -> bool:
         return self.rank == 0
 
+def not_distributed_context() -> DistributedContext:
+    # default, non-distributed context
+    return DistributedContext(
+        is_distributed=False, rank=0, local_rank=0, world_size=1, mode="none"
+    )
 
 def maybe_init_distributed(args) -> DistributedContext:
     assert not hasattr(
         args, "distributed_context"
     ), "distributed context is already initialized?!"
-    # default, non-distributed context
-    context = DistributedContext(
-        is_distributed=False, rank=0, local_rank=0, world_size=1, mode="none"
-    )
+    context = not_distributed_context()
     if args.no_distributed:
         return context
 

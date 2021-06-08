@@ -103,15 +103,15 @@ def _populate_cl_params(arg_parser: argparse.ArgumentParser) -> argparse.Argumen
     )
 
     # Channel parameters
-    arg_parser.add_argument(
-        "--vocab_size",
-        type=int,
-        default=10,
-        help="Number of symbols (terms) in the vocabulary (default: 10)",
-    )
-    arg_parser.add_argument(
-        "--max_len", type=int, default=1, help="Max length of the sequence (default: 1)"
-    )
+    #  arg_parser.add_argument(
+    #      "--vocab_size",
+    #      type=int,
+    #      default=10,
+    #      help="Number of symbols (terms) in the vocabulary (default: 10)",
+    #  )
+    #  arg_parser.add_argument(
+    #      "--max_len", type=int, default=1, help="Max length of the sequence (default: 1)"
+    #  )
 
     # Setting up tensorboard
     arg_parser.add_argument(

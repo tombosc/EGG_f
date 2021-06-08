@@ -25,7 +25,7 @@ class Data(data.Dataset):
         dataset: str = 'proto'  
         train_ratio: float = 0.7
         valid_ratio: float = 0.1
-        dataset_seed: int = 0
+        dataset_seed: int = 2147483647
         shuffle_roles: bool = False
         augment: str = 'basic'  # none or basic
 
@@ -177,10 +177,12 @@ class Data(data.Dataset):
                 perm = self.roleset_permutations[i]
                 properties = v.properties[perm]
                 gram_funcs = v.gram_funcs[perm]
+                example = (properties, gram_funcs, i, perm.astype(float))
             else:
                 properties = v.properties
                 gram_funcs = v.gram_funcs
-            examples.append((properties, gram_funcs, i))
+                example = (properties, gram_funcs, i, None)
+            examples.append(example)
         # 1. augment the dataset to hide some slots
         self.examples = []
         # we're doing data augmentation. we want to make sure that augmented
@@ -198,7 +200,7 @@ class Data(data.Dataset):
             self.examples.extend(new_examples)
 
     @staticmethod
-    def prepare_inputs(properties, gram_funcs, id_roleset, augment):
+    def prepare_inputs(properties, gram_funcs, id_roleset, permutation, augment):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -225,7 +227,10 @@ class Data(data.Dataset):
             else: 
                 rcv_roleset = id_roleset + 1
             receiver_input = (rcv_roleset, incomplete_properties)
-            labels = (id_roleset, properties, gram_funcs)
+            labels = [id_roleset, properties, gram_funcs]
+            if permutation is not None:
+                labels.append(permutation)
+            labels = tuple(labels)
             # the sender has the original input, + an indication of what to
             # transmit to the receiver
             sender_input = (id_roleset+1, properties, to_send)
@@ -253,18 +258,6 @@ class Data(data.Dataset):
                 new_examples.append(package_input(combination_array))
             return new_examples
 
-    #  def analyse_role_distributions(self, selection, n_max_args):
-    #      n_roles = np.zeros(n_max_args)
-    #      prop_arrays = []
-    #      for e in selection:
-    #          n_roles += (e.gram_funcs != -1)
-    #          prop = e.properties.copy()
-    #          prop[prop == 0] = np.nan
-    #          prop_arrays.append(prop)
-    #      mean = np.nanmean(np.stack(prop_arrays), axis=0)
-    #      print(n_roles)
-    #      print(mean)
-
     def random_split(self, ratios, generator):
         r""" A modification of random_split so that each augmented/noisy
             example stays in the same split with the original one.
@@ -290,4 +283,35 @@ class Data(data.Dataset):
 
     def __getitem__(self, i):
         # data consists in verb type and property matrix and verb type
+        #  if type(i) == list:
+        #      return [self.examples[e] for e in i]
         return self.examples[i]
+
+def init_data(data_cfg, run_random_seed, batch_size):
+    """ Everything data loading related here.
+    """
+    data_gen = torch.Generator()
+    data_gen.manual_seed(data_cfg.dataset_seed)
+    all_data = Data(seed=data_cfg.dataset_seed, augment=data_cfg.augment, 
+                     shuffle_roles=data_cfg.shuffle_roles)
+    ratios = (data_cfg.train_ratio, data_cfg.valid_ratio,
+              1 - (data_cfg.train_ratio + data_cfg.valid_ratio))
+    # test data will be used to test after model selection
+    # prob in another script
+    train_data, valid_data, test_data = all_data.random_split(ratios, data_gen)
+    # data order is determind by same random seed as model parameter, not as
+    # dataset 
+    shuffle_gen = torch.Generator()
+    shuffle_gen.manual_seed(run_random_seed)
+    # couldn't get that to work, but luckily there's an undocumented generator
+    # parameter for DataLoader.
+    #  train_sampler = BatchSampler(
+    #      RandomSampler(data), generator=shuffle_gen),
+    #      batch_size=opts.batch_size, drop_last=False,
+    #  )
+    #  train_loader = DataLoader(train_data, sampler=train_sampler)
+    train_loader = data.DataLoader(train_data, batch_size=batch_size,
+            shuffle=True, generator=shuffle_gen)
+    valid_loader = data.DataLoader(valid_data, batch_size=batch_size)
+    test_loader = data.DataLoader(test_data, batch_size=batch_size)
+    return all_data, train_loader, valid_loader, test_loader

@@ -8,6 +8,7 @@ from typing import List, Tuple
 from .callbacks import Callback
 from .interaction import Interaction
 import operator
+import json
 
 
 class EarlyStopper(Callback):
@@ -43,7 +44,7 @@ class EarlyStopperNoImprovement(EarlyStopper):
     """
     Stops when loss hasn't improved for "patience" epochs on validation set.
     """
-    def __init__(self, patience: int, validation = True,
+    def __init__(self, patience: int, log_path: str, validation = True,
     ) -> None:
         """
         :param patience: when it has been patience epochs that the loss has not
@@ -51,6 +52,7 @@ class EarlyStopperNoImprovement(EarlyStopper):
         """
         super(EarlyStopperNoImprovement, self).__init__(validation)
         self.patience = patience
+        self.log_path = log_path
 
     def should_stop(self) -> bool:
         if self.validation:
@@ -67,6 +69,9 @@ class EarlyStopperNoImprovement(EarlyStopper):
         #  scores = [interac.aux[self.field_name] for _, interac in stats]
         scores = [loss for loss, _ in stats]
         min_idx, min_val = min(enumerate(scores), key=operator.itemgetter(1))
+        with open(self.log_path, 'w') as f:
+            log = {"best_score": min_val, "epoch_factor": min_idx}
+            json.dump(log, f)
         return min_idx + self.patience < len(scores)
 
     

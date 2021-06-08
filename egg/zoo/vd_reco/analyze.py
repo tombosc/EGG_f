@@ -19,41 +19,38 @@ import egg.core as core
 from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
-from .archs_protoroles import (Sender, TransformerSenderGS, Receiver,
-        SenderReceiverTransformerGS)
-from .data_proto import Data as DataProto
+from .archs_protoroles import Hyperparameters, load_game
+from .train_vl import loss_objs
+#  from .data_proto import init_data as init_data_proto
+from .data_proto import Data as DataProto, init_data as init_data_proto
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from simple_parsing import ArgumentParser
+from egg.core import Trainer
+import egg.core.util as util
+from egg.core.distributed import not_distributed_context
 
 
 def get_model_data(params):
     parser = ArgumentParser()
     parser.add_argument('checkpoint', type=str)
-    parser.add_argument('dataset_json', type=str)
-    parser.add_argument('train_interactions', type=str)
+    #  parser.add_argument('train_interactions', type=str)
     args = parser.parse_args(params)
-    with open(args.dataset_json, 'r') as f:
+    dirname = os.path.dirname(args.checkpoint)
+    dataset_json = os.path.join(dirname, 'data.json')
+    with open(dataset_json, 'r') as f:
         json_data = json.load(f)
         dataset_name = json_data["dataset"]
+    checkpoint = torch.load(args.checkpoint)
+    hp_json = os.path.join(dirname, 'hp.json')
     if dataset_name == 'proto':
-        data_cfg = DataProto.Settings.load(args.dataset_json)
-        # TODO now data is ignored, only interactions matter
-        data = DataProto(seed=data_cfg.dataset_seed, augment=data_cfg.augment,
-                         shuffle_roles=data_cfg.shuffle_roles)
+        data_cfg = DataProto.Settings.load(dataset_json)
+        dataset, train_data, valid_data, test_data = init_data_proto(data_cfg, 0, 128)
+        model = load_game(Hyperparameters.load(hp_json), loss_objs)
+        model.load_state_dict(checkpoint.model_state_dict)
     else:
         raise ValueError('Unknown dataset', dataset_name)
-    ratios = (data_cfg.train_ratio, data_cfg.valid_ratio,
-              1 - (data_cfg.train_ratio + data_cfg.valid_ratio))
-    data_gen = torch.Generator()
-    #  train_data, _, test_data = data.random_split(ratios, data_gen)
-    train_data, test_data = None, None
-    #  model = torch.load(args.checkpoint)
-    # TODO for now, model is ignored
-    model = None
-    train_interactions = torch.load(args.train_interactions)
-    #  train_loader = DataLoader(train_data, batch_size=opts.batch_size)
-    #  valid_loader = DataLoader(valid_data, batch_size=opts.batch_size)
-    return model, train_interactions, data, train_data, test_data
+    #  train_interactions = torch.load(args.train_interactions)
+    return dirname, model, dataset, train_data, valid_data, test_data
 
 
 def count_argument_positions(interactions):
@@ -70,17 +67,30 @@ def count_argument_positions(interactions):
 
 
 def main(params):
-    model, train_I, dataset, train_data, test_data = get_model_data(params)
-    # check that data is correctly split by verifying that all training data is
-    # the same in saved interactions and in the data processed on the fly
-    #  n_train_data = train_I.sender_input.size(0)
-    #  assert(n_train_data == len(train_data))
-    #  for i in range(n_train_data):
-    #      assert(torch.all(train_I.sender_input[i] ==
-    #          torch.tensor(train_data[i][0][1])))
-    arg_counts = count_argument_positions(train_I)
+    dirname, model, dataset, train_data, valid_data, test_data = get_model_data(params)
+    util.common_opts = argparse.Namespace()
+    util.no_distributed = True
+    util.common_opts.preemptable = False
+    util.common_opts.validation_freq = 0
+    util.common_opts.update_freq = 0
+    util.common_opts.checkpoint_dir = None
+    util.common_opts.checkpoint_freq = 0
+    util.common_opts.checkpoint_best = ""
+    util.common_opts.tensorboard = False
+    util.common_opts.fp16 = False
+    util.common_opts.load_from_checkpoint = None
+    util.common_opts.distributed_context = not_distributed_context()
+
+    evaluator = Trainer(model, None, train_data, valid_data, 'cpu', None, None, False)
+    loss_valid, I = evaluator.eval()
+    score_path_json = os.path.join(dirname, 'best_scores.json')
+    with open(score_path_json, 'r') as f:
+        best_score = json.load(f)['best_score']
+    print("Best score vs eval", loss_valid, best_score)
+    exit()
+    # TODO fix the rest
+
     j = 0
-    I = train_I
     marker = 99
     roleset_permutations = dataset.roleset_permutations
     for argument, count in arg_counts.most_common(30):

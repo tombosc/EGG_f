@@ -7,10 +7,33 @@ import egg.core as core
 import math
 from egg.core.interaction import LoggingStrategy
 from egg.core.util import find_lengths
+from dataclasses import dataclass
+from simple_parsing.helpers import Serializable
+
 
 _n_roles = 1639
 _n_arg = 3
 
+@dataclass
+class Hyperparameters(Serializable):
+    sender_nlayers: int = 2
+    receiver_nlayers: int = 2
+    sender_hidden: int = 10  # size of hidden layer of Sender (default: 10)
+    receiver_hidden: int = 10  # size of hidden layer of Receiver (default: 10)
+    sender_cell: str = 'tfm'
+    receiver_cell: str = 'tfm'
+    dropout: float = 0.1
+    sender_emb: int = 10  # size of embeddings of Sender (default: 10)
+    receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
+    max_len: int = 3 
+    vocab_size: int = 64
+    mode: str = 'gs'
+    predict_roleset: bool = False
+    temperature: float = 1.0
+    # these are more like optimisation params, but...
+    ada_len_cost_thresh: float = 0.0
+    distance_reg_coef: float = 0.0
+    length_cost: float = 0.0
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -454,6 +477,9 @@ class SenderReceiverTransformerGS(nn.Module):
 
         aux = {}
         aux["length"] = L.float()
+        aux["gram_funcs"] = labels[2].float()
+        if len(labels) > 3 and labels[3] is not None:
+            aux["permutation"] = labels[3]
         if self.loss_roles:
             aux["loss_roles"] = loss_roles
         aux["loss_objs"] = loss_objs
@@ -475,3 +501,36 @@ class SenderReceiverTransformerGS(nn.Module):
             aux=aux,
         )
         return loss.mean(), interaction
+
+def load_game(hp, loss_objs):
+    receiver = Receiver(
+        dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
+        vocab_size=hp.vocab_size, dropout=hp.dropout,
+        max_len=hp.max_len,
+        n_layers=hp.receiver_nlayers,
+        distance_reg_coef=hp.distance_reg_coef,
+        predict_roleset=hp.predict_roleset,
+    )
+    sender = Sender(
+        dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
+        vocab_size=hp.vocab_size, dropout=hp.dropout,
+        max_len=hp.max_len, 
+        n_layers=hp.sender_nlayers,
+    )
+    sender = TransformerSenderGS(
+        agent=sender, vocab_size=hp.vocab_size,
+        embed_dim=hp.sender_emb, max_len=hp.max_len,
+        num_layers=hp.sender_nlayers,
+        num_heads=8, hidden_size=hp.sender_hidden,
+        temperature=hp.temperature,
+        dropout=hp.dropout,
+        causal=False,  # causal shouldn't matter, b/c only use the last token
+        distance_reg_coef=hp.distance_reg_coef,
+    )
+    game = SenderReceiverTransformerGS(sender, receiver, 
+            loss_roles=loss_roles if hp.predict_roleset else None,
+            loss_objs=loss_objs,
+            length_cost = hp.length_cost,
+            ada_len_cost_thresh = hp.ada_len_cost_thresh,
+    )
+    return game
