@@ -6,13 +6,13 @@ module load anaconda/3 pytorch/1.7
 
 source $HOME/venv_gra/bin/activate
 
-NAME="proto_1sh_adam"
+NAME="proto_1r_adam"
 SEED=$1
 N_RUNS=$2
 EXP_BASENAME="${NAME}_sd${SEED}"
 TMP_EXP_DIR="${SLURM_TMPDIR}/bosctom/${EXP_BASENAME}"
 # the backup/final exp dir is not seed specific
-FINAL_EXP_DIR="/home/mila/b/bosctom/res_${NAME}"
+FINAL_EXP_DIR="/home/mila/b/bosctom/EGG_f/res_${NAME}"
 mkdir -p $TMP_EXP_DIR
 mkdir -p $FINAL_EXP_DIR
 echo $TMP_EXP_DIR 
