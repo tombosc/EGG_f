@@ -28,6 +28,7 @@ class Data(data.Dataset):
         dataset_seed: int = 2147483647
         shuffle_roles: bool = False
         augment: str = 'basic'  # none or basic
+        hide_to_send: bool = False
 
     @staticmethod
     def compactify(L, set_properties, n_max_args):
@@ -125,12 +126,13 @@ class Data(data.Dataset):
 
     def __init__(self, seed=0, n_max_args=3, 
                  fn="protoroles_eng_pb/protoroles_eng_pb_08302015.tsv",
-                 augment="basic", shuffle_roles=False,
+                 augment="basic", shuffle_roles=False, hide_to_send=False,
         ):
         """
         For values of augment, please see prepare_inputs
         shuffle_roles: if True, for each verb, roles are going to be shuffled.
         """
+        self.hide_to_send = hide_to_send
         rng = np.random.default_rng(seed)
         lines = []
         set_properties = set()
@@ -190,7 +192,8 @@ class Data(data.Dataset):
         # split. that's what tied_ids is for.
         self.tied_ids = []  
         for orig_example in examples:
-            new_examples = self.prepare_inputs(*orig_example, augment=augment)
+            new_examples = self.prepare_inputs(*orig_example, augment=augment,
+                    hide_to_send=self.hide_to_send)
             # for each verb token in the original dataset, we want to keep the
             # "augmented" ones (with partial inputs) in the same split, so we
             # need to store the ids
@@ -200,7 +203,8 @@ class Data(data.Dataset):
             self.examples.extend(new_examples)
 
     @staticmethod
-    def prepare_inputs(properties, gram_funcs, id_roleset, permutation, augment):
+    def prepare_inputs(properties, gram_funcs, id_roleset, permutation,
+            augment, hide_to_send):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -232,7 +236,9 @@ class Data(data.Dataset):
                 labels.append(permutation)
             labels = tuple(labels)
             # the sender has the original input, + an indication of what to
-            # transmit to the receiver
+            # transmit to the receiver, unless hide_to_send!
+            if hide_to_send:
+                to_send[:] = 0
             sender_input = (id_roleset+1, properties, to_send)
             return (sender_input, labels, receiver_input)
         
@@ -293,7 +299,8 @@ def init_data(data_cfg, run_random_seed, batch_size):
     data_gen = torch.Generator()
     data_gen.manual_seed(data_cfg.dataset_seed)
     all_data = Data(seed=data_cfg.dataset_seed, augment=data_cfg.augment, 
-                     shuffle_roles=data_cfg.shuffle_roles)
+                     shuffle_roles=data_cfg.shuffle_roles,
+                     hide_to_send=data_cfg.hide_to_send)
     ratios = (data_cfg.train_ratio, data_cfg.valid_ratio,
               1 - (data_cfg.train_ratio + data_cfg.valid_ratio))
     # test data will be used to test after model selection
