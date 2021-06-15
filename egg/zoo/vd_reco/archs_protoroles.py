@@ -454,7 +454,7 @@ class SenderReceiverTransformerGS(nn.Module):
             loss_roles = self.loss_roles(receiver_outputs[0], labels)
         else:
             loss_roles = 0
-        loss_objs = self.loss_objs(
+        loss_objs_entity_wise = self.loss_objs(
             sender_input,
             message,
             distribs,
@@ -462,6 +462,8 @@ class SenderReceiverTransformerGS(nn.Module):
             receiver_outputs[1],
             labels,
         )
+        loss_objs = loss_objs_entity_wise.sum(1)
+
         if self.ada_len_cost_thresh:
             length_loss_coef = loss_objs < self.ada_len_cost_thresh
         else:
@@ -483,6 +485,7 @@ class SenderReceiverTransformerGS(nn.Module):
         if self.loss_roles:
             aux["loss_roles"] = loss_roles
         aux["loss_objs"] = loss_objs
+        aux["loss_objs_D"] = loss_objs_entity_wise
         aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost
         aux["sender_input_to_send"] = sender_input[2].float()

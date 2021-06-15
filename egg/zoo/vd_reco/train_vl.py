@@ -75,8 +75,12 @@ def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
     messages.
     """
     labels_objs = labels[1]
-    return F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
-            reduction="none").sum(1).sum(1)
+    CE = F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
+            reduction="none")
+    # dims: batch, obj position, attribute
+    # I sum only over attributes and leave the sum on the objects to other code
+    # so that I can decompose loss objectwise
+    return CE.sum(2)
 
 def main(params):
     dataset, opts = get_params(params)
