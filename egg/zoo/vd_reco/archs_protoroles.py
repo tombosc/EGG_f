@@ -19,12 +19,12 @@ class Hyperparameters(Serializable):
     sender_nlayers: int = 2
     receiver_nlayers: int = 2
     sender_hidden: int = 10  # size of hidden layer of Sender (default: 10)
-    receiver_hidden: int = 10  # size of hidden layer of Receiver (default: 10)
+    #  receiver_hidden: int = 10  # size of hidden layer of Receiver (default: 10)
     sender_cell: str = 'tfm'
     receiver_cell: str = 'tfm'
     dropout: float = 0.1
     sender_emb: int = 10  # size of embeddings of Sender (default: 10)
-    receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
+    #  receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
     max_len: int = 3 
     vocab_size: int = 64
     mode: str = 'gs'
@@ -106,7 +106,8 @@ class Embedder(nn.Module):
         return role_emb, obj_emb
 
 class Sender(nn.Module):
-    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len, n_layers=3, n_head=8):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
+            n_layers=3, n_head=8):
         super(Sender, self).__init__()
         self.max_len = max_len
         self.embedder = Embedder(dim_emb, dropout)
