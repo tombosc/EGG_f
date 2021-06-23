@@ -9,6 +9,7 @@ import copy
 import os
 from collections import Counter, defaultdict
 import pylev
+from .levenshtein import wfi_levenshtein
 
 import torch
 import torch.nn.functional as F
@@ -37,6 +38,7 @@ def get_model_data(params):
     parser = ArgumentParser()
     parser.add_argument('checkpoint', type=str)
     parser.add_argument('--topsim', action='store_true')
+    parser.add_argument('--topsim_option', default='')
     #  parser.add_argument('train_interactions', type=str)
     args = parser.parse_args(params)
     dirname = os.path.dirname(args.checkpoint)
@@ -73,6 +75,7 @@ def count_argument_positions(interactions):
 
 
 def main(params):
+    np.random.seed(0)
     args, dirname, model, dataset, train_data, valid_data, test_data = get_model_data(params)
     util.common_opts = argparse.Namespace()
     util.no_distributed = True
@@ -88,7 +91,14 @@ def main(params):
     util.common_opts.distributed_context = not_distributed_context()
 
     #  evaluator = Trainer(model, None, train_data, valid_data, 'cpu', None, None, False)
-    evaluator = Trainer(model, None, train_data, train_data, 'cpu', None, None, False)
+    split = 'train'
+    if split == 'train':
+        data = train_data
+    elif split == 'valid':
+        data = valid_data
+    elif split == 'test':
+        data = test_data
+    evaluator = Trainer(model, None, train_data, data, 'cpu', None, None, False)
     loss_valid, I = evaluator.eval()
     score_path_json = os.path.join(dirname, 'best_scores.json')
     if os.path.exists(score_path_json):
@@ -97,26 +107,46 @@ def main(params):
         print("Best score vs eval", loss_valid, best_score)
     else:
         print("Score path not found. Loss:", loss_valid)
+    if args.topsim_option:
+        assert(args.topsim)
 
     if args.topsim:
-        N = len(I.aux)
+        N = len(I.aux['length'])
         pairs = []
-        for k in range(100000):
+        for k in range(10000):
             i, j = np.random.choice(N, 2)
             m_i = I.message[i].argmax(1)
             m_j = I.message[j].argmax(1)
             # the objects will be the objects to send only
             def object_repr(idx):
-                to_send_i = I.aux["sender_input_to_send"][idx][1:] > 0
-                return (I.sender_input[idx] * to_send_i.unsqueeze(1)).view(-1)
+                if args.topsim_option == 'no_filter':
+                    return I.sender_input[idx]
+                else:
+                    to_send_i = I.aux["sender_input_to_send"][idx][1:] > 0
+                    return (I.sender_input[idx] * to_send_i.unsqueeze(1)).view(-1)
             x_i = object_repr(i) 
             x_j = object_repr(j)
-            d_m = pylev.levenshtein(m_i.tolist(), m_j.tolist())
+            if args.topsim_option == 'sub2':
+                sub_cost = 2
+            else:
+                sub_cost = 1
+            d_m = wfi_levenshtein(m_i.tolist(), m_j.tolist(),
+                    substitution_cost=sub_cost)
             d_x = (x_i != x_j).int().sum().item()
             pairs.append((d_x, d_m))
-        import pdb; pdb.set_trace()
         pairs = np.asarray(pairs)
-        print("spearman", spearmanr(pairs[:, 0], pairs[:, 1]))
+        spearman = spearmanr(pairs[:, 0], pairs[:, 1])
+        print("spearman", spearman)
+        if args.topsim_option:
+            topsim_json = os.path.join(dirname, 'topsim_' + args.topsim_option + '.json')
+        else:
+            topsim_json = os.path.join(dirname, 'topsim.json')
+        with open(topsim_json, 'w') as fp:
+            data = {
+                'split': split, 'spearman': spearman.correlation,
+                'pvalue': spearman.pvalue,
+            }
+            json.dump(data, fp)
         exit()
 
     arg_counts, pos_counts = count_argument_positions(I)
