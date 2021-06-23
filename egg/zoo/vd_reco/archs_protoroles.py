@@ -34,6 +34,7 @@ class Hyperparameters(Serializable):
     ada_len_cost_thresh: float = 0.0
     distance_reg_coef: float = 0.0
     length_cost: float = 0.0
+    flat_attention: bool = False
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -56,7 +57,7 @@ def exponential_distance_vector(n, k):
 
 
 class Embedder(nn.Module):
-    def __init__(self, dim_emb, dropout, variant=1):
+    def __init__(self, dim_emb, dropout, variant=1, flat_attention=False):
         super(Embedder, self).__init__()
         dim_small_emb = 10
         # we add 1 to the number of roles, b/c there is a "0" dummy role for
@@ -66,51 +67,63 @@ class Embedder(nn.Module):
         # there are 18 properties per object, 
         # each taking 4 values (0: N/A, 1, 2, 3 for 1, 3, 5 on Likert scale
         n_prop = 18
-        self.obj_embedding = nn.Embedding(4 * n_prop, dim_emb)
-        if variant == 1:
+        if flat_attention:
+            self.obj_embedding = nn.Embedding(4 * n_prop * _n_arg, dim_emb)
+            self.idx_offset = torch.arange(0, _n_arg * n_prop)
+        else:
+            self.obj_embedding = nn.Embedding(4 * n_prop, dim_emb)
+            self.idx_offset = torch.arange(0, n_prop)
+        if variant == 1 and not flat_attention:
             self.transform = nn.Sequential(
                 nn.Linear(n_prop * dim_emb, dim_emb),
                 nn.ReLU(),
                 nn.LayerNorm(dim_emb),
-                #  nn.Linear(n_prop * dim_emb, 2*dim_emb),
-                #  nn.ReLU(),
-                #  nn.Dropout(dropout),
-                #  nn.Linear(2*dim_emb, dim_emb),
             )
         else:
             self.transform = None
         # since each embedding for each attribute is different but we store
         # them all in one matrix, we need to add offsets
-        self.idx_offset = torch.arange(0, n_prop)
         self.pos_role_embedding = nn.Parameter(
             torch.randn((1, dim_emb))
         )
-        self.pos_obj_embeddings = nn.Parameter(
-            torch.randn((1, _n_arg, dim_emb))
-        )
+        if not flat_attention:
+            self.pos_obj_embeddings = nn.Parameter(
+                torch.randn((1, _n_arg, dim_emb))
+            )
+        else:
+            self.pos_obj_embeddings = nn.Parameter(
+                torch.randn((1, _n_arg * n_prop, dim_emb))
+            )
+        self.flat_attention = flat_attention
 
     def forward(self, roleset, properties):
         role_emb = self.role_embedding(roleset)
         role_emb = self.role_linear(role_emb)
-        obj_emb = self.obj_embedding(properties +
-                self.idx_offset.to(properties.device))  
         # (bs, n_args, n_attr, dim_emb)
-        if self.transform:
-            bs, n_args, n_attr, dim_emb = obj_emb.size()
-            reshaped = obj_emb.view(bs, n_args, -1)
-            obj_emb = self.transform(reshaped)
+        bs, n_args, n_attr = properties.size()
+        if self.flat_attention:
+            P = properties.view(bs, n_args*n_attr)
+            obj_emb = self.obj_embedding(P + self.idx_offset.to(P.device))  
+            obj_emb = obj_emb.view(bs, n_args*n_attr, -1)
         else:
-            obj_emb = obj_emb.mean(2)
+            obj_emb = self.obj_embedding(properties +
+                self.idx_offset.to(properties.device))  
+            if self.transform:
+                reshaped = obj_emb.view(bs, n_args, -1)
+                obj_emb = self.transform(reshaped)
+            else:
+                obj_emb = obj_emb.mean(2)
         obj_emb = obj_emb + self.pos_obj_embeddings
         role_emb = role_emb + self.pos_role_embedding
         return role_emb, obj_emb
 
 class Sender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
-            n_layers=3, n_head=8):
+            n_layers=3, n_head=8, flat_attention=False):
         super(Sender, self).__init__()
         self.max_len = max_len
-        self.embedder = Embedder(dim_emb, dropout)
+        self.embedder = Embedder(dim_emb, dropout,
+                flat_attention=flat_attention)
         # hardcoded embedding size that's is small, b/c we have very few data
         # for rolesets, so for stat efficiency, keep it small
         self.vocab_size = vocab_size
@@ -119,6 +132,7 @@ class Sender(nn.Module):
         self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
         # embedding for marking positions to send
         self.mark = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+        self.flat_attention = flat_attention
 
     def forward(self, input_):
         roleset, properties, marked = input_
@@ -128,23 +142,33 @@ class Sender(nn.Module):
         # account the other arguments that are visible to the receiver in order
         # to decide what to send (pragmatics)
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
-        x += (self.mark * marked.unsqueeze(2))
-        # on the other hand, the mask only masks out absent objects
-        mask = torch.zeros_like(x[:, :, 0]).bool()
-        mask[:, 1:] = (properties == 0).all(2)  # "pos with true are ignored"
+        if self.flat_attention:
+            marked = marked[:, 1:]  # ignore roleset
+            bs, n_arg = marked.size()
+            expanded = marked.view(bs, n_arg, 1).expand(bs, n_arg, 18)
+            flattened = expanded.reshape(bs, n_arg*18, 1)
+            x[:, 1:] += (self.mark * flattened)
+            mask = None
+        else:
+            x += (self.mark * marked.unsqueeze(2))
+            # on the other hand, the mask only masks out absent objects
+            mask = torch.zeros_like(x[:, :, 0]).bool()
+            mask[:, 1:] = (properties == 0).all(2)  # "pos with true are ignored"
         # mask should be (bs, L), input should be (L, bs, dim)
         return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask)
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
-            n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False):
+            n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False,
+            flat_attention=False):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
         self.pos_msg_embedding = nn.Parameter(
             torch.randn((1, max_len+1, dim_emb))
         )
         # them all in one matrix, we need to add offsets
-        self.embedder = Embedder(dim_emb, dropout)
+        self.embedder = Embedder(dim_emb, dropout,
+                flat_attention=flat_attention)
         activation = 'gelu'
         self.tfm = nn.Transformer(
             d_model=dim_emb,
@@ -159,11 +183,15 @@ class Receiver(nn.Module):
             self.out_role = nn.Linear(dim_emb, _n_roles)
         else: 
             self.out_role = None
-        self.out_obj = nn.Linear(dim_emb, 4*18)
+        if flat_attention:
+            self.out_obj = nn.Linear(dim_emb, 4)
+        else:
+            self.out_obj = nn.Linear(dim_emb, 4*18)
         self.distance_reg_coef = distance_reg_coef
         if distance_reg_coef > 0:
             v = exponential_distance_vector(max_len+1, distance_reg_coef)
             self.distance_matrix = make_circulant(v)
+        self.flat_attention = flat_attention
 
 
     def forward(self, msg, receiver_inputs):
@@ -514,12 +542,14 @@ def load_game(hp, loss_objs):
         n_layers=hp.receiver_nlayers,
         distance_reg_coef=hp.distance_reg_coef,
         predict_roleset=hp.predict_roleset,
+        flat_attention=hp.flat_attention,
     )
     sender = Sender(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         max_len=hp.max_len, 
         n_layers=hp.sender_nlayers,
+        flat_attention=hp.flat_attention,
     )
     sender = TransformerSenderGS(
         agent=sender, vocab_size=hp.vocab_size,
