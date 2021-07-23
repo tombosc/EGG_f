@@ -10,7 +10,6 @@ from egg.core.util import find_lengths
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
 
-
 _n_roles = 1639
 _n_arg = 3
 
@@ -35,6 +34,7 @@ class Hyperparameters(Serializable):
     distance_reg_coef: float = 0.0
     length_cost: float = 0.0
     flat_attention: bool = False
+    predict_classical_roles: bool = False
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -160,7 +160,7 @@ class Sender(nn.Module):
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
             n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False,
-            flat_attention=False):
+            flat_attention=False, predict_classical_roles=False):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
         self.pos_msg_embedding = nn.Parameter(
@@ -180,9 +180,15 @@ class Receiver(nn.Module):
             activation=activation,
         )
         if predict_roleset:
-            self.out_role = nn.Linear(dim_emb, _n_roles)
+            self.out_roleset = nn.Linear(dim_emb, _n_roles)
         else: 
+            self.out_roleset = None
+        if predict_classical_roles:
+            # there needs to be an "absent" role label (ground-truth -1)
+            self.out_role = nn.Linear(dim_emb, _n_arg + 1)
+        else:
             self.out_role = None
+
         if flat_attention:
             self.out_obj = nn.Linear(dim_emb, 4)
         else:
@@ -209,13 +215,11 @@ class Receiver(nn.Module):
             attn_mask = None
         y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
                      src_mask=attn_mask)
-        if self.out_role:
-            role_pred = self.out_role(y[0])
-        else:
-            role_pred = None
+        roleset_pred = self.out_roleset(y[0]) if self.out_roleset else None
+        role_pred = self.out_role(y[1:]).transpose(0, 1) if self.out_role else None
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
-        return role_pred, obj_pred
+        return roleset_pred, role_pred, obj_pred
 
 
 class TransformerSenderGS(nn.Module):
@@ -420,7 +424,7 @@ class SenderReceiverTransformerGS(nn.Module):
         self,
         sender,
         receiver,
-        loss_roles,
+        loss_rolesets,
         loss_objs, 
         length_cost=0.0,
         ada_len_cost_thresh=0,
@@ -453,7 +457,7 @@ class SenderReceiverTransformerGS(nn.Module):
         super(SenderReceiverTransformerGS, self).__init__()
         self.sender = sender
         self.receiver = receiver
-        self.loss_roles = loss_roles
+        self.loss_rolesets = loss_rolesets
         self.loss_objs = loss_objs
         self.length_cost = length_cost
         self.train_logging_strategy = (
@@ -479,18 +483,26 @@ class SenderReceiverTransformerGS(nn.Module):
         message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
         receiver_outputs = self.receiver(message, receiver_input)
 
-        if self.loss_roles:
-            loss_roles = self.loss_roles(receiver_outputs[0], labels)
+        if self.loss_rolesets:
+            loss_rolesets = self.loss_rolesets(receiver_outputs[0], labels)
         else:
-            loss_roles = 0
-        loss_objs_entity_wise = self.loss_objs(
+            loss_rolesets = 0
+        maybe_packed_losses = self.loss_objs(
             sender_input,
             message,
             distribs,
             receiver_input,
-            receiver_outputs[1],
+            receiver_outputs[1], 
+            receiver_outputs[2],
             labels,
         )
+        if type(maybe_packed_losses) == tuple:
+            loss_roles_entity_wise, loss_objs_entity_wise = maybe_packed_losses
+            loss_roles = loss_roles_entity_wise.sum(1)
+        else:
+            loss_objs_entity_wise = maybe_packed_losses
+            loss_roles = 0
+
         loss_objs = loss_objs_entity_wise.sum(1)
 
         if self.ada_len_cost_thresh:
@@ -501,18 +513,22 @@ class SenderReceiverTransformerGS(nn.Module):
         weighted_length_cost = (self.length_cost * length_loss_coef *
                 unweighted_length_cost)
         loss = (
-            loss_roles +
+            loss_rolesets +
             loss_objs +
+            loss_roles +
             weighted_length_cost
         )
 
         aux = {}
         aux["length"] = L.float()
         aux["gram_funcs"] = labels[2].float()
-        if len(labels) > 3 and labels[3] is not None:
+        if not torch.all(labels[3] == 0).item():
             aux["permutation"] = labels[3]
-        if self.loss_roles:
-            aux["loss_roles"] = loss_roles
+        if self.loss_rolesets:
+            aux["loss_rolesets"] = loss_rolesets
+        if type(loss_roles) != int:
+            aux["loss_classical_roles"] = loss_roles
+            aux["loss_classical_roles_D"] = loss_roles_entity_wise
         aux["loss_objs"] = loss_objs
         aux["loss_objs_D"] = loss_objs_entity_wise
         aux["roleset"] = sender_input[0].float()
@@ -527,7 +543,7 @@ class SenderReceiverTransformerGS(nn.Module):
             sender_input=sender_input[1],
             receiver_input=receiver_input[1].detach(),
             labels=labels[1],
-            receiver_output=receiver_outputs[1].detach(),
+            receiver_output=receiver_outputs[2].detach(),
             message=message.detach(),
             message_length=L.float().detach(),
             aux=aux,
@@ -543,6 +559,7 @@ def load_game(hp, loss_objs):
         distance_reg_coef=hp.distance_reg_coef,
         predict_roleset=hp.predict_roleset,
         flat_attention=hp.flat_attention,
+        predict_classical_roles=hp.predict_classical_roles,
     )
     sender = Sender(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
@@ -562,7 +579,7 @@ def load_game(hp, loss_objs):
         distance_reg_coef=hp.distance_reg_coef,
     )
     game = SenderReceiverTransformerGS(sender, receiver, 
-            loss_roles=loss_roles if hp.predict_roleset else None,
+            loss_rolesets=loss_rolesets if hp.predict_roleset else None,
             loss_objs=loss_objs,
             length_cost = hp.length_cost,
             ada_len_cost_thresh = hp.ada_len_cost_thresh,

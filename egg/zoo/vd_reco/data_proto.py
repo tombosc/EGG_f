@@ -13,9 +13,10 @@ from simple_parsing.helpers import Serializable
 VerbTokenArg = namedtuple('VerbTokenArg',
     ['split', 'sentence_id', 'pred_token', 'arg', 'roleset',
     'gram_func', 'properties'])
+
 VerbToken = namedtuple('VerbToken',
     ['split', 'sentence_id', 'pred_token', 'roleset',
-    'gram_funcs', 'properties'])
+    'gram_funcs', 'properties', 'classical_roles'])
 
 class Data(data.Dataset):
     """ Proto-roles.
@@ -106,15 +107,18 @@ class Data(data.Dataset):
                 # instantiate array
                 properties = np.zeros((n_max_args, n_prop), dtype=int)
                 gram_funcs = np.ones(n_max_args, dtype=int) * -1
+                roles = np.ones(n_max_args, dtype=int) * -1
                 verb_token = VerbToken(
                     split=vta.split, sentence_id=vta.sentence_id, 
                     pred_token=vta.pred_token, roleset=vta.roleset, 
                     gram_funcs=gram_funcs, properties=properties,
+                    classical_roles=roles,
                 )
                 tokens[key] = verb_token
             else:
                 properties = verb_token.properties
             properties[arg, :] = vta.properties
+            verb_token.classical_roles[arg] = arg
             #  if np.all(vta.properties == 0):
             #      print("Error?")
             #      print(vta)
@@ -179,11 +183,13 @@ class Data(data.Dataset):
                 perm = self.roleset_permutations[i]
                 properties = v.properties[perm]
                 gram_funcs = v.gram_funcs[perm]
-                example = (properties, gram_funcs, i, perm.astype(float))
+                roles = v.classical_roles[perm]
+                example = (properties, gram_funcs, i, perm.astype(float), roles)
             else:
                 properties = v.properties
                 gram_funcs = v.gram_funcs
-                example = (properties, gram_funcs, i, None)
+                roles = v.classical_roles
+                example = (properties, gram_funcs, i, None, roles)
             examples.append(example)
         # 1. augment the dataset to hide some slots
         self.examples = []
@@ -204,7 +210,7 @@ class Data(data.Dataset):
 
     @staticmethod
     def prepare_inputs(properties, gram_funcs, id_roleset, permutation,
-            augment, hide_to_send):
+            roles_infos, augment, hide_to_send):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -231,9 +237,10 @@ class Data(data.Dataset):
             else: 
                 rcv_roleset = id_roleset + 1
             receiver_input = (rcv_roleset, incomplete_properties)
-            labels = [id_roleset, properties, gram_funcs]
+            zero = np.zeros(1)
+            labels = [id_roleset, properties, gram_funcs, zero, roles_infos]
             if permutation is not None:
-                labels.append(permutation)
+                labels[3] = permutation
             labels = tuple(labels)
             # the sender has the original input, + an indication of what to
             # transmit to the receiver, unless hide_to_send!

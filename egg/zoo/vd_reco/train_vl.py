@@ -13,6 +13,7 @@ import torch.nn.functional as F
 from torch.utils.data import (DataLoader, random_split, BatchSampler, RandomSampler)
 from torch.distributions import Categorical
 from functools import partial
+from scipy.optimize import linear_sum_assignment
 
 import egg.core as core
 from egg.core.smorms3 import SMORMS3
@@ -44,6 +45,8 @@ def get_params(params):
                         help="Momentum (β_1 for Adam)")
     parser.add_argument('--adam_beta2', type=float, default=0.999,
                         help="β_2 for Adam")
+    parser.add_argument('--unordered_classical', action='store_true',
+                        help='Predict classical roles jointly w/ features')
     #  parser.add_argument('--ada_H_cost_thresh', type=float, default=0.0)
     #  parser.add_argument('--sender_entropy_coeff', type=float, default=0e-2,
     #                      help="Entropy regularisation coeff for Sender (default: 1e-2)")
@@ -54,6 +57,8 @@ def get_params(params):
     #  parser.add_argument('--entropy_coef', type=float, default=0.)
     #  parser.add_argument('--test_time_sampling', action='store_true', default=False)
     args = core.init(arg_parser=parser, params=params)
+    if args.unordered_classical:
+        args.hp.predict_classical_roles = True
     #  assert args.n_examples_per_epoch % args.batch_size == 0
     return dataset, args
 
@@ -64,16 +69,13 @@ def entropy(probs):
 
 
 def loss_roles(receiver_output_role, labels):
-    labels_role, _, _ = labels
+    labels_role, _, _, _ = labels
     return F.cross_entropy(receiver_output_role, labels_role,
             reduction="none")
 
 
 def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
-        receiver_output_objs, labels):
-    """ distrib_message is a list of conditional distributions over
-    messages.
-    """
+        receiver_output_roles, receiver_output_objs, labels):
     labels_objs = labels[1]
     CE = F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
             reduction="none")
@@ -81,6 +83,54 @@ def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
     # I sum only over attributes and leave the sum on the objects to other code
     # so that I can decompose loss objectwise
     return CE.sum(2)
+
+def loss_classical_roles(receiver_output_roles, labels):
+    labels_roles = labels[4] + 1
+    CE = F.cross_entropy(receiver_output_roles.permute(0,2,1), labels_roles,
+            reduction="none")
+    return CE
+
+def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
+        receiver_output_roles, receiver_output_objs, labels):
+    # match outputs with ground truth, a la GraphVAE:
+    # - edges are classical roles
+    # - features are the 18 properties
+    # we need to match each transformer output to the best ground-truth
+    # (node,role) pair.
+    # we use the Hungarian algorithm (O(n^3)) to solve that
+    # we can compute the loss corresponding to object i being matched to gt j
+    # easily: for 3 objects, we will compute a=loss(i=[0, 1, 2]), b=loss(i=[1, 2,
+    # 0]), c=loss(i=[2, 0, 1]). 
+    # so b[1] corresponds to the loss of object 2 being matched to gt 1.
+    # in other words, vertically stacking these matrices give us the cost
+    # matrix
+    LO = []
+    LR = []
+    for perm in [[0, 1, 2], [1, 2, 0], [2, 0, 1]]:
+        LO_ = loss_objs(_sender_input, _message, distrib_message, 
+                _receiver_input, None, receiver_output_objs[:, perm], labels)
+        LR_ = loss_classical_roles(receiver_output_roles[:, perm], labels)
+        LO.append(LO_)
+        LR.append(LR_)
+    LO = torch.stack(LO).transpose(1, 0)
+    LR = torch.stack(LR).transpose(1, 0)
+    def normalize(mat):
+        return (mat - mat.mean()) / mat.std()
+
+    cost = (LO + LR)
+    norm_LO = normalize(LO)
+    norm_LR = normalize(LR)
+    norm_cost = (norm_LO + norm_LR)
+    cpu_norm_cost = norm_cost.cpu().detach().numpy()
+    matched_loss_objs, matched_loss_roles = [], []
+    for i, c in enumerate(cpu_norm_cost):
+        row_ind, col_ind = linear_sum_assignment(c)
+        matched_loss_obj_ = LO[i, torch.tensor(row_ind), torch.tensor(col_ind)]
+        matched_loss_roles_ = LR[i, torch.tensor(row_ind), torch.tensor(col_ind)]
+        matched_loss_objs.append(matched_loss_obj_)
+        matched_loss_roles.append(matched_loss_roles_)
+    return (torch.stack(matched_loss_roles), torch.stack(matched_loss_objs))
+
 
 def main(params):
     dataset, opts = get_params(params)
@@ -90,8 +140,12 @@ def main(params):
         data, train_loader, valid_loader, _ = init_data_proto(opts.data, opts.random_seed, opts.batch_size)
     device = opts.device
     torch.manual_seed(opts.random_seed)  # for model parameters
+    if not opts.unordered_classical:
+        loss = loss_objs
+    else:
+        loss = loss_unordered
     if opts.hp.sender_cell == 'tfm' and opts.hp.mode == 'gs':
-        game = load_game(opts.hp, loss_objs)
+        game = load_game(opts.hp, loss)
     else:
         raise NotImplementedError()
     print(game)
