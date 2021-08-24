@@ -22,7 +22,7 @@ class Hyperparameters(Serializable):
     sender_cell: str = 'tfm'
     receiver_cell: str = 'tfm'
     dropout: float = 0.1
-    sender_emb: int = 10  # size of embeddings of Sender (default: 10)
+    sender_emb: int = 32  # size of embeddings of Sender (default: 10)
     #  receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
     max_len: int = 3 
     vocab_size: int = 64
@@ -57,11 +57,15 @@ def exponential_distance_vector(n, k):
 
 
 class Embedder(nn.Module):
-    def __init__(self, dim_emb, dropout, variant=1, flat_attention=False):
+    """ Turn a discrete 2D matrix encoding feature of objects into a continuous
+    2D matrix. If flat_attention:
+    """
+    def __init__(self, dim_emb, flat_attention=False):
         super(Embedder, self).__init__()
+        # we use smaller embeddings for roleset, that we then project.
         dim_small_emb = 10
-        # we add 1 to the number of roles, b/c there is a "0" dummy role for
-        # when it's hidden
+        # we add 1 to the number of roles, b/c there is a "0" dummy role if
+        # we decide it should be hidden
         self.role_embedding = nn.Embedding(_n_roles+1, dim_small_emb)
         self.role_linear = nn.Linear(dim_small_emb, dim_emb)
         # there are 18 properties per object, 
@@ -69,11 +73,11 @@ class Embedder(nn.Module):
         n_prop = 18
         if flat_attention:
             self.obj_embedding = nn.Embedding(4 * n_prop * _n_arg, dim_emb)
-            self.idx_offset = torch.arange(0, _n_arg * n_prop)
+            self.idx_offset = torch.arange(0, _n_arg * n_prop) * 4
         else:
             self.obj_embedding = nn.Embedding(4 * n_prop, dim_emb)
-            self.idx_offset = torch.arange(0, n_prop)
-        if variant == 1 and not flat_attention:
+            self.idx_offset = torch.arange(0, n_prop) * 4
+        if not flat_attention:
             self.transform = nn.Sequential(
                 nn.Linear(n_prop * dim_emb, dim_emb),
                 nn.ReLU(),
@@ -122,8 +126,7 @@ class Sender(nn.Module):
             n_layers=3, n_head=8, flat_attention=False):
         super(Sender, self).__init__()
         self.max_len = max_len
-        self.embedder = Embedder(dim_emb, dropout,
-                flat_attention=flat_attention)
+        self.embedder = Embedder(dim_emb, flat_attention=flat_attention)
         # hardcoded embedding size that's is small, b/c we have very few data
         # for rolesets, so for stat efficiency, keep it small
         self.vocab_size = vocab_size
@@ -167,8 +170,7 @@ class Receiver(nn.Module):
             torch.randn((1, max_len+1, dim_emb))
         )
         # them all in one matrix, we need to add offsets
-        self.embedder = Embedder(dim_emb, dropout,
-                flat_attention=flat_attention)
+        self.embedder = Embedder(dim_emb, flat_attention=flat_attention)
         activation = 'gelu'
         self.tfm = nn.Transformer(
             d_model=dim_emb,

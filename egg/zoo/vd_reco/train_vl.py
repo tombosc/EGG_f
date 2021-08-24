@@ -58,7 +58,14 @@ def get_params(params):
     #  parser.add_argument('--test_time_sampling', action='store_true', default=False)
     args = core.init(arg_parser=parser, params=params)
     if args.unordered_classical:
+        # we have to store it here so that it is saved in the experiment dir.
+        # we do not save optimisation hyperparams
         args.hp.predict_classical_roles = True
+    else:
+        # if the flag is not present, it is still possible that we're reloading
+        # a checkpoint containing hp.predict_classical_roles = True!
+        # so we shouldn't touch the value here.
+        pass
     #  assert args.n_examples_per_epoch % args.batch_size == 0
     return dataset, args
 
@@ -140,7 +147,7 @@ def main(params):
         data, train_loader, valid_loader, _ = init_data_proto(opts.data, opts.random_seed, opts.batch_size)
     device = opts.device
     torch.manual_seed(opts.random_seed)  # for model parameters
-    if not opts.unordered_classical:
+    if not opts.hp.predict_classical_roles:
         loss = loss_objs
     else:
         loss = loss_unordered
