@@ -91,6 +91,24 @@ def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
     # so that I can decompose loss objectwise
     return CE.sum(2)
 
+def loss_ordered(_sender_input, _message, distrib_message, _receiver_input,
+        receiver_output_roles, receiver_output_objs, labels):
+    """ With this loss, the 1st output vector is interpreted as 1st thematic role, 
+    2nd vector as 2nd thematic role, etc. So the outputs are ordered according
+    to thematic roles, and there is no matching problem. Receiver_output_roles
+    is interpreted as a binary prediction of whether the object is missing or
+    not. """
+    CE = loss_objs(_sender_input, _message, distrib_message, _receiver_input,
+        receiver_output_roles, receiver_output_objs, labels)
+    # only non-missing objects count in the loss
+    object_absent = (labels[4] == -1)
+    target_object_present = (~ object_absent).long()
+    CE = CE.masked_fill(object_absent, 0)
+    # prediction of objects which are present vs mere padding 
+    CE_present = F.cross_entropy(receiver_output_roles.permute(0,2,1), target_object_present,
+            reduction="none")
+    return (CE_present, CE)
+
 def loss_classical_roles(receiver_output_roles, labels):
     labels_roles = labels[4] + 1
     CE = F.cross_entropy(receiver_output_roles.permute(0,2,1), labels_roles,
@@ -99,6 +117,9 @@ def loss_classical_roles(receiver_output_roles, labels):
 
 def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
         receiver_output_roles, receiver_output_objs, labels):
+    raise NotImplementedError()  
+    # TODO! broken, we need to only match the N (non-padding objects).
+    # I'm not sure how to do that yet, but it's prob overkill.
     # match outputs with ground truth, a la GraphVAE:
     # - edges are classical roles
     # - features are the 18 properties
@@ -119,6 +140,7 @@ def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
         LR_ = loss_classical_roles(receiver_output_roles[:, perm], labels)
         LO.append(LO_)
         LR.append(LR_)
+    # stack and put batch dim first again
     LO = torch.stack(LO).transpose(1, 0)
     LR = torch.stack(LR).transpose(1, 0)
     def normalize(mat):
@@ -130,7 +152,7 @@ def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
     norm_cost = (norm_LO + norm_LR)
     cpu_norm_cost = norm_cost.cpu().detach().numpy()
     matched_loss_objs, matched_loss_roles = [], []
-    for i, c in enumerate(cpu_norm_cost):
+    for i, c in enumerate(cpu_norm_cost):  # iterate over batch
         row_ind, col_ind = linear_sum_assignment(c)
         matched_loss_obj_ = LO[i, torch.tensor(row_ind), torch.tensor(col_ind)]
         matched_loss_roles_ = LR[i, torch.tensor(row_ind), torch.tensor(col_ind)]
@@ -148,11 +170,11 @@ def main(params):
     device = opts.device
     torch.manual_seed(opts.random_seed)  # for model parameters
     if not opts.hp.predict_classical_roles:
-        loss = loss_objs
+        loss = loss_ordered
     else:
         loss = loss_unordered
     if opts.hp.sender_cell == 'tfm' and opts.hp.mode == 'gs':
-        game = load_game(opts.hp, loss)
+        game = load_game(opts.hp, loss, opts.data.n_thematic_roles)
     else:
         raise NotImplementedError()
     print(game)

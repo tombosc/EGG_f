@@ -30,9 +30,10 @@ class Data(data.Dataset):
         shuffle_roles: bool = False
         augment: str = 'basic'  # none or basic
         hide_to_send: bool = False
+        n_thematic_roles: int = 3
 
     @staticmethod
-    def compactify(L, set_properties, n_max_args):
+    def compactify(L, set_properties, n_thematic_roles):
         """ In L, every element contains a single property value for a certain
         verb token and a certain argument of that verb token. This function
         turns it into a list where there is only one element per verb token.
@@ -47,7 +48,7 @@ class Data(data.Dataset):
         arg_pos_per_key = defaultdict(set)
         for l in L:
             arg = int(l['Arg'])
-            if arg >= n_max_args:
+            if arg >= n_thematic_roles:
                 continue
             # why do we need such a long index?
             # - there are several sentences
@@ -98,16 +99,16 @@ class Data(data.Dataset):
         idx_gram_func = {'subj': 0, 'obj': 1, 'other': 2}
         count_args = Counter()
         for (sent_id, pred_token, arg), vta in compacted.items():
-            if arg > n_max_args:
+            if arg > n_thematic_roles:
                 continue
             key = (sent_id, pred_token)
             verb_token = tokens.get(key, None)
             count_args[arg] += 1
             if not verb_token:
                 # instantiate array
-                properties = np.zeros((n_max_args, n_prop), dtype=int)
-                gram_funcs = np.ones(n_max_args, dtype=int) * -1
-                roles = np.ones(n_max_args, dtype=int) * -1
+                properties = np.zeros((n_thematic_roles, n_prop), dtype=int)
+                gram_funcs = np.ones(n_thematic_roles, dtype=int) * -1
+                roles = np.ones(n_thematic_roles, dtype=int) * -1
                 verb_token = VerbToken(
                     split=vta.split, sentence_id=vta.sentence_id, 
                     pred_token=vta.pred_token, roleset=vta.roleset, 
@@ -128,7 +129,7 @@ class Data(data.Dataset):
         return tokens, ordered_properties
 
 
-    def __init__(self, seed=0, n_max_args=3, 
+    def __init__(self, seed=0, n_thematic_roles=3, 
                  fn="protoroles_eng_pb/protoroles_eng_pb_08302015.tsv",
                  augment="basic", shuffle_roles=False, hide_to_send=False,
         ):
@@ -150,7 +151,7 @@ class Data(data.Dataset):
                 lines.append(line)
         # then, turn each one of them into a list of integers
         verb_tokens, self.ordered_properties = \
-                self.compactify(lines, set_properties, n_max_args)
+                self.compactify(lines, set_properties, n_thematic_roles)
         # we can now group all verb tokens to get the distribution over types
         def present_roles(vt):
             #  n_total = vt.properties.shape[0]
@@ -163,8 +164,8 @@ class Data(data.Dataset):
             return not_0
         counts = Counter([present_roles(vt) for vt in verb_tokens.values()])
         keys_all_0 = [k for k, vt in verb_tokens.items() if n_roles(vt) == 0]
-        print("removing {} examples which have no roles (n_max_args={})".format(
-            len(keys_all_0), n_max_args))
+        print("removing {} examples which have no roles (n_thematic_roles={})".format(
+            len(keys_all_0), n_thematic_roles))
         print(counts)
         verb_tokens = {k: v for k, v in verb_tokens.items() if k not in keys_all_0}
         # we need to encode the roleset (the verb + an ID for polysemy) as an integer
@@ -175,7 +176,7 @@ class Data(data.Dataset):
         # we have to iterate over the sorted keys to stay deterministic...
         sorted_keys = sorted(verb_tokens.keys())
         if shuffle_roles:
-            self.roleset_permutations = [rng.permutation(n_max_args) for _ in self.idx_roleset]
+            self.roleset_permutations = [rng.permutation(n_thematic_roles) for _ in self.idx_roleset]
         for k in sorted_keys:
             v = verb_tokens[k]
             i = self.idx_roleset[v.roleset]
@@ -210,7 +211,7 @@ class Data(data.Dataset):
 
     @staticmethod
     def prepare_inputs(properties, gram_funcs, id_roleset, permutation,
-            roles_infos, augment, hide_to_send):
+            thematic_roles, augment, hide_to_send):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -229,16 +230,20 @@ class Data(data.Dataset):
             if hide_all_receiver:
                 incomplete_properties = np.zeros_like(properties)
             else:
-                # the receiver sees the incomplete properties
+                # the receiver sees the incomplete properties and th roles
                 incomplete_properties = properties.copy()
                 incomplete_properties *= (1 - to_send[1:, np.newaxis])
+                incomplete_th_roles = thematic_roles.copy()
+                incomplete_th_roles[to_send[1:] == 1] = -1
             if hide_roleset:
                 rcv_roleset = 0
             else: 
                 rcv_roleset = id_roleset + 1
-            receiver_input = (rcv_roleset, incomplete_properties)
+            receiver_input = (rcv_roleset, incomplete_properties,
+                    incomplete_th_roles)
             zero = np.zeros(1)
-            labels = [id_roleset, properties, gram_funcs, zero, roles_infos]
+            labels = [id_roleset, properties, gram_funcs, zero,
+                    thematic_roles]
             if permutation is not None:
                 labels[3] = permutation
             labels = tuple(labels)
@@ -246,7 +251,7 @@ class Data(data.Dataset):
             # transmit to the receiver, unless hide_to_send!
             if hide_to_send:
                 to_send[:] = 0
-            sender_input = (id_roleset+1, properties, to_send)
+            sender_input = (id_roleset+1, properties, thematic_roles, to_send)
             return (sender_input, labels, receiver_input)
         
         filled_roles = [i for i, f in enumerate(gram_funcs) if f != -1]
@@ -307,7 +312,9 @@ def init_data(data_cfg, run_random_seed, batch_size):
     data_gen.manual_seed(data_cfg.dataset_seed)
     all_data = Data(seed=data_cfg.dataset_seed, augment=data_cfg.augment, 
                      shuffle_roles=data_cfg.shuffle_roles,
-                     hide_to_send=data_cfg.hide_to_send)
+                     hide_to_send=data_cfg.hide_to_send,
+                     n_thematic_roles=data_cfg.n_thematic_roles, 
+                   )
     ratios = (data_cfg.train_ratio, data_cfg.valid_ratio,
               1 - (data_cfg.train_ratio + data_cfg.valid_ratio))
     # test data will be used to test after model selection

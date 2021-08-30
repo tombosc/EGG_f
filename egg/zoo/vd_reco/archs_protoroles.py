@@ -10,8 +10,15 @@ from egg.core.util import find_lengths
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
 
-_n_roles = 1639
-_n_arg = 3
+_n_rolesets = 1639
+
+
+def maybe_FA_expand(flat_attention, mask):
+    if flat_attention:
+        bs, n_roles = mask.size()
+        M = mask.unsqueeze(2).expand(bs, n_roles, 18)
+        return M.reshape(bs, n_roles*18)
+    return mask
 
 @dataclass
 class Hyperparameters(Serializable):
@@ -24,6 +31,7 @@ class Hyperparameters(Serializable):
     dropout: float = 0.1
     sender_emb: int = 32  # size of embeddings of Sender (default: 10)
     #  receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
+    sender_mask_padded: bool = False
     max_len: int = 3 
     vocab_size: int = 64
     mode: str = 'gs'
@@ -60,22 +68,24 @@ class Embedder(nn.Module):
     """ Turn a discrete 2D matrix encoding feature of objects into a continuous
     2D matrix. If flat_attention:
     """
-    def __init__(self, dim_emb, flat_attention=False):
+    def __init__(self, dim_emb, n_thematic_roles, flat_attention=False):
         super(Embedder, self).__init__()
         # we use smaller embeddings for roleset, that we then project.
         dim_small_emb = 10
-        # we add 1 to the number of roles, b/c there is a "0" dummy role if
+        # we add 1 to the roleset, b/c there is a "0" dummy roleset if
         # we decide it should be hidden
-        self.role_embedding = nn.Embedding(_n_roles+1, dim_small_emb)
-        self.role_linear = nn.Linear(dim_small_emb, dim_emb)
+        self.roleset_embedding = nn.Embedding(_n_rolesets+1, dim_small_emb)
+        self.roleset_linear = nn.Linear(dim_small_emb, dim_emb)
         # there are 18 properties per object, 
         # each taking 4 values (0: N/A, 1, 2, 3 for 1, 3, 5 on Likert scale
+        # idx_offset is used to take different embeddings for each property (OO
+        # variant) or each (property, object) pair (flat variant)
         n_prop = 18
         if flat_attention:
-            self.obj_embedding = nn.Embedding(4 * n_prop * _n_arg, dim_emb)
-            self.idx_offset = torch.arange(0, _n_arg * n_prop) * 4
+            self.value_embedding = nn.Embedding(4 * n_prop * n_thematic_roles, dim_emb)
+            self.idx_offset = torch.arange(0, n_thematic_roles * n_prop) * 4
         else:
-            self.obj_embedding = nn.Embedding(4 * n_prop, dim_emb)
+            self.value_embedding = nn.Embedding(4 * n_prop, dim_emb)
             self.idx_offset = torch.arange(0, n_prop) * 4
         if not flat_attention:
             self.transform = nn.Sequential(
@@ -90,78 +100,107 @@ class Embedder(nn.Module):
         self.pos_role_embedding = nn.Parameter(
             torch.randn((1, dim_emb))
         )
+        # the positional embeddings typically used by transformers have
+        # different meanings here: in FA variant, they're specific to each
+        # role AND property pair; in OO, they're specific to each role.
         if not flat_attention:
             self.pos_obj_embeddings = nn.Parameter(
-                torch.randn((1, _n_arg, dim_emb))
+                torch.randn((1, n_thematic_roles, dim_emb))
             )
         else:
             self.pos_obj_embeddings = nn.Parameter(
-                torch.randn((1, _n_arg * n_prop, dim_emb))
+                torch.randn((1, n_thematic_roles * n_prop, dim_emb))
             )
         self.flat_attention = flat_attention
+        self.n_thematic_roles = n_thematic_roles
+        self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
 
-    def forward(self, roleset, properties):
-        role_emb = self.role_embedding(roleset)
-        role_emb = self.role_linear(role_emb)
-        # (bs, n_args, n_attr, dim_emb)
-        bs, n_args, n_attr = properties.size()
+    def forward(self, roleset, properties, thematic_roles):
+        role_emb = self.roleset_embedding(roleset)
+        role_emb = self.roleset_linear(role_emb)
+        # (bs, n_th_roles, n_attr, dim_emb)
+        bs, n_th_roles, n_attr = properties.size()
         if self.flat_attention:
-            P = properties.view(bs, n_args*n_attr)
-            obj_emb = self.obj_embedding(P + self.idx_offset.to(P.device))  
-            obj_emb = obj_emb.view(bs, n_args*n_attr, -1)
+            P = properties.view(bs, n_th_roles*n_attr)
+            obj_emb = self.value_embedding(P + self.idx_offset.to(P.device))  
+            obj_emb = obj_emb.view(bs, n_th_roles*n_attr, -1)
         else:
-            obj_emb = self.obj_embedding(properties +
+            obj_emb = self.value_embedding(properties +
                 self.idx_offset.to(properties.device))  
             if self.transform:
-                reshaped = obj_emb.view(bs, n_args, -1)
+                reshaped = obj_emb.view(bs, n_th_roles, -1)
                 obj_emb = self.transform(reshaped)
             else:
                 obj_emb = obj_emb.mean(2)
+
+        # input thematic_roles:
+        # -1=missing (sender, receiver) or hidden (receiver only),
+        # 0=agent, 1=patient, etc.
+        # for the receiver, whether an object is padding or hidden makes no
+        # difference. Therefore, if the sender transmits info about a single
+        # object, it doesn't know what role to expect for this object a priori.
+        padding_or_hidden = maybe_FA_expand(
+                self.flat_attention,
+                thematic_roles == -1).unsqueeze(2)
+        # this overrides the previous transformations/embeddings of NA values.
+        obj_emb = obj_emb.masked_fill(padding_or_hidden, 0)
+        obj_emb += padding_or_hidden * self.mark_absent
+        # thematic roles are already "used", since the order of the objects in 
+        # the properties matrix already encodes for the role, and we use
+        # pos_obj_embeddings.
         obj_emb = obj_emb + self.pos_obj_embeddings
         role_emb = role_emb + self.pos_role_embedding
-        return role_emb, obj_emb
+        return role_emb, obj_emb, padding_or_hidden.squeeze(2)
 
 class Sender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
+            n_thematic_roles, mask_padded,
             n_layers=3, n_head=8, flat_attention=False):
         super(Sender, self).__init__()
         self.max_len = max_len
-        self.embedder = Embedder(dim_emb, flat_attention=flat_attention)
-        # hardcoded embedding size that's is small, b/c we have very few data
-        # for rolesets, so for stat efficiency, keep it small
+        self.embedder = Embedder(dim_emb, n_thematic_roles,
+                flat_attention=flat_attention)
         self.vocab_size = vocab_size
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
         self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
         # embedding for marking positions to send
-        self.mark = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+        self.mark_tosend = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
         self.flat_attention = flat_attention
+        self.mask_padded = mask_padded
 
     def forward(self, input_):
-        roleset, properties, marked = input_
-        role_emb, obj_emb = self.embedder(roleset, properties)
+        roleset, properties, thematic_roles, marked = input_
+        role_emb, obj_emb, mask_padding = self.embedder(roleset, properties, thematic_roles)
         # mark positions that need to be sent.
         # we do not mask the other positions, so that the sender can take into
         # account the other arguments that are visible to the receiver in order
         # to decide what to send (pragmatics)
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
+
+        mask = None  # by default, absent objects are selectable by attention
+        if self.mask_padded:
+            # in this variant, absent objects are never selected by attention
+            # set absent object's mask to 1: ignored by Transformer
+            # 0:1: notation to select 0, but keepdim!..
+            roleset_dummy_mask = torch.zeros_like(mask_padding[:, 0:1])
+            mask = torch.cat((roleset_dummy_mask, mask_padding), 1)
+
+        # mark objects to send with special embedding
         if self.flat_attention:
             marked = marked[:, 1:]  # ignore roleset
             bs, n_arg = marked.size()
             expanded = marked.view(bs, n_arg, 1).expand(bs, n_arg, 18)
             flattened = expanded.reshape(bs, n_arg*18, 1)
-            x[:, 1:] += (self.mark * flattened)
-            mask = None
+            x[:, 1:] += (self.mark_tosend * flattened)
         else:
-            x += (self.mark * marked.unsqueeze(2))
-            # on the other hand, the mask only masks out absent objects
-            mask = torch.zeros_like(x[:, :, 0]).bool()
-            mask[:, 1:] = (properties == 0).all(2)  # "pos with true are ignored"
+            x += (self.mark_tosend * marked.unsqueeze(2))
         # mask should be (bs, L), input should be (L, bs, dim)
         return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask)
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
+            n_thematic_roles, 
             n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False,
             flat_attention=False, predict_classical_roles=False):
         super(Receiver, self).__init__()
@@ -170,7 +209,7 @@ class Receiver(nn.Module):
             torch.randn((1, max_len+1, dim_emb))
         )
         # them all in one matrix, we need to add offsets
-        self.embedder = Embedder(dim_emb, flat_attention=flat_attention)
+        self.embedder = Embedder(dim_emb, n_thematic_roles, flat_attention=flat_attention)
         activation = 'gelu'
         self.tfm = nn.Transformer(
             d_model=dim_emb,
@@ -182,14 +221,15 @@ class Receiver(nn.Module):
             activation=activation,
         )
         if predict_roleset:
-            self.out_roleset = nn.Linear(dim_emb, _n_roles)
+            self.out_roleset = nn.Linear(dim_emb, _n_rolesets)
         else: 
             self.out_roleset = None
         if predict_classical_roles:
             # there needs to be an "absent" role label (ground-truth -1)
-            self.out_role = nn.Linear(dim_emb, _n_arg + 1)
+            self.out_role = nn.Linear(dim_emb, n_thematic_roles + 1)
         else:
-            self.out_role = None
+            # else, only predict whether the object is padding or real
+            self.out_role = nn.Linear(dim_emb, 2)
 
         if flat_attention:
             self.out_obj = nn.Linear(dim_emb, 4)
@@ -207,9 +247,8 @@ class Receiver(nn.Module):
         # to debug:
         # embed_msg = torch.zeros_like(embed_msg)
         embed_msg += self.pos_msg_embedding
-        roleset, properties = receiver_inputs
-        role_emb, obj_emb = self.embedder(roleset, properties)
-        #  import pdb; pdb.set_trace()
+        roleset, properties, thematic_roles = receiver_inputs
+        role_emb, obj_emb, _ = self.embedder(roleset, properties, thematic_roles)
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
         if self.distance_reg_coef > 0:
             attn_mask = self.distance_matrix.to(x.device)
@@ -218,7 +257,7 @@ class Receiver(nn.Module):
         y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
                      src_mask=attn_mask)
         roleset_pred = self.out_roleset(y[0]) if self.out_roleset else None
-        role_pred = self.out_role(y[1:]).transpose(0, 1) if self.out_role else None
+        role_pred = self.out_role(y[1:]).transpose(0, 1)
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
         return roleset_pred, role_pred, obj_pred
@@ -552,11 +591,12 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         return loss.mean(), interaction
 
-def load_game(hp, loss_objs):
+def load_game(hp, loss_objs, n_thematic_roles):
     receiver = Receiver(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         max_len=hp.max_len,
+        n_thematic_roles=n_thematic_roles, 
         n_layers=hp.receiver_nlayers,
         distance_reg_coef=hp.distance_reg_coef,
         predict_roleset=hp.predict_roleset,
@@ -567,6 +607,8 @@ def load_game(hp, loss_objs):
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         max_len=hp.max_len, 
+        n_thematic_roles=n_thematic_roles, 
+        mask_padded=hp.sender_mask_padded,
         n_layers=hp.sender_nlayers,
         flat_attention=hp.flat_attention,
     )
