@@ -574,7 +574,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["loss_objs_D"] = loss_objs_entity_wise
         aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost
-        aux["sender_input_to_send"] = sender_input[2].float()
+        aux["sender_input_to_send"] = sender_input[3].float()
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
