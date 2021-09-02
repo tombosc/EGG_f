@@ -226,20 +226,23 @@ class Receiver(nn.Module):
             self.out_roleset = None
         if predict_classical_roles:
             # there needs to be an "absent" role label (ground-truth -1)
-            self.out_role = nn.Linear(dim_emb, n_thematic_roles + 1)
+            self.out_role_output_dim = n_thematic_roles + 1
         else:
             # else, only predict whether the object is padding or real
-            self.out_role = nn.Linear(dim_emb, 2)
+            self.out_role_output_dim = 2
 
         if flat_attention:
             self.out_obj = nn.Linear(dim_emb, 4)
+            self.out_role = nn.Linear(2*dim_emb, self.out_role_output_dim * n_thematic_roles)
         else:
             self.out_obj = nn.Linear(dim_emb, 4*18)
+            self.out_role = nn.Linear(dim_emb, out_role_output_dim)
         self.distance_reg_coef = distance_reg_coef
         if distance_reg_coef > 0:
             v = exponential_distance_vector(max_len+1, distance_reg_coef)
             self.distance_matrix = make_circulant(v)
         self.flat_attention = flat_attention
+        self.n_thematic_roles = n_thematic_roles
 
 
     def forward(self, msg, receiver_inputs):
@@ -257,7 +260,16 @@ class Receiver(nn.Module):
         y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
                      src_mask=attn_mask)
         roleset_pred = self.out_roleset(y[0]) if self.out_roleset else None
-        role_pred = self.out_role(y[1:]).transpose(0, 1)
+        # role prediction:
+        if self.flat_attention:
+            max_y = y[1:].max(0)[0]
+            avg_y = y[1:].mean(0)
+            role_features = torch.cat((max_y, avg_y), dim=1)
+            bs = y.size(1)
+            role_pred = self.out_role(role_features).view(bs, self.n_thematic_roles,
+                    self.out_role_output_dim)
+        else:
+            role_pred = self.out_role(y[1:]).transpose(0, 1)
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
         return roleset_pred, role_pred, obj_pred

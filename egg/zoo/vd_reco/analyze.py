@@ -25,7 +25,7 @@ from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_protoroles import Hyperparameters, load_game
-from .train_vl import loss_objs
+from .train_vl import loss_objs, loss_unordered
 #  from .data_proto import init_data as init_data_proto
 from .data_proto import Data as DataProto, init_data as init_data_proto
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
@@ -80,7 +80,12 @@ def get_model_data(params):
     if dataset_name == 'proto':
         data_cfg = DataProto.Settings.load(dataset_json)
         dataset, train_data, valid_data, test_data = init_data_proto(data_cfg, 0, 128)
-        model = load_game(Hyperparameters.load(hp_json), loss_objs)
+        hp = Hyperparameters.load(hp_json)
+        if not hp.predict_classical_roles:
+            loss = loss_objs
+        else:
+            loss = loss_unordered
+        model = load_game(hp, loss, data_cfg.n_thematic_roles)
         model.load_state_dict(checkpoint.model_state_dict)
     else:
         raise ValueError('Unknown dataset', dataset_name)
@@ -233,6 +238,7 @@ def main(params):
             gb_sender_input[sender_input][tuple(to_send.tolist())] = msg
         dists = defaultdict(list)
         normalized_dists = defaultdict(list)
+        concat_ordering = Counter()
         for sender_input, v in gb_sender_input.items():
             #  v = sorted(v, key=lambda e: e[0].sum())
             v_one_object = [e for e in v.items() if sum(e[0]) == 1]
@@ -264,17 +270,18 @@ def main(params):
                                cut_msg_2 + cut_msg_1]
                     order = [(n_send_1, n_send_2), (n_send_2, n_send_1)]
                     msg_sum = remove_padding_list(msg_sum)
+                    D = []
                     for o, concatenation in zip(order, concats):
                         n_dist = normalized_levenshtein(msg_sum, concatenation, 2)
                         dist = wfi_levenshtein(msg_sum, concatenation,
                                                substitution_cost=2)
+                        D.append(dist)
                         dists[o].append(dist)
                         normalized_dists[o].append(n_dist)
-                    #  i_min = np.argmin(D)
-                    #  i_max = np.argmax(D)
-                    #  if D[i_min] != D[i_max]:
-                    #      concat_ordering[order[i_min]] += 1
-                    #  smallest_D = D[i_min]
+                    i_min = np.argmin(D)
+                    i_max = np.argmax(D)
+                    if D[i_min] != D[i_max]:
+                       concat_ordering[order[i_min]] += 1
         if options:
             compo_json = os.path.join(
                 dirname, 'compo_' + args.compo_option + '.json',
@@ -290,21 +297,31 @@ def main(params):
                 min(np.sum(A[(0,2)]), np.sum(A[(2,0)])) + 
                 min(np.sum(A[(1,2)]), np.sum(A[(2,1)]))
             )
+        def sum_local_min(A):
+            A1 = np.vstack([A[(0, 1)], A[(1, 0)]])
+            A2 = np.vstack([A[(0, 2)], A[(2, 0)]])
+            A3 = np.vstack([A[(2, 1)], A[(1, 2)]])
+            return (A1.min(0).sum() + A2.min(0).sum() + A3.min(0).sum())
+
         sum_unnorm_dists = sum_global_min(dists)
         sum_norm_dists = sum_global_min(normalized_dists)
+        sum_local_unnorm_dists = sum_local_min(dists)
+        sum_local_norm_dists = sum_local_min(normalized_dists)
         n_combinations = [len(dists[e]) for e in [(0,1), (0,2), (1,2)]]
         n = sum(n_combinations)
-        #  concat_ordering = {','.join([str(e) for e in k]): v for k, v in
-        #          concat_ordering.items()}
+        concat_ordering = {','.join([str(e) for e in k]): v for k, v in
+                  concat_ordering.items()}
         with open(compo_json, 'w') as fp:
             data = {
                 'n': n,
                 'sum_unnorm': sum_unnorm_dists / float(n),
+                'sum_local_unnorm': sum_local_unnorm_dists / float(n),
                 'sum_norm': sum_norm_dists / float(n),
+                'sum_local_norm': sum_local_norm_dists / float(n),
+                'order': concat_ordering,
                 #  'n': len(distances),
                 #  'mean': distances.mean(),
                 #  'std': distances.std(),
-                #  'order': concat_ordering,
 
             }
             print(data)
