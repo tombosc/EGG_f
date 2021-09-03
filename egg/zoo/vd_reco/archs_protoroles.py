@@ -236,7 +236,7 @@ class Receiver(nn.Module):
             self.out_role = nn.Linear(2*dim_emb, self.out_role_output_dim * n_thematic_roles)
         else:
             self.out_obj = nn.Linear(dim_emb, 4*18)
-            self.out_role = nn.Linear(dim_emb, out_role_output_dim)
+            self.out_role = nn.Linear(dim_emb, self.out_role_output_dim)
         self.distance_reg_coef = distance_reg_coef
         if distance_reg_coef > 0:
             v = exponential_distance_vector(max_len+1, distance_reg_coef)
