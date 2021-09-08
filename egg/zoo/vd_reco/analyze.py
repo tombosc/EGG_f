@@ -25,7 +25,7 @@ from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_protoroles import Hyperparameters, load_game
-from .train_vl import loss_objs, loss_unordered
+from .train_vl import loss_ordered, loss_unordered
 #  from .data_proto import init_data as init_data_proto
 from .data_proto import Data as DataProto, init_data as init_data_proto
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
@@ -82,7 +82,7 @@ def get_model_data(params):
         dataset, train_data, valid_data, test_data = init_data_proto(data_cfg, 0, 128)
         hp = Hyperparameters.load(hp_json)
         if not hp.predict_classical_roles:
-            loss = loss_objs
+            loss = loss_ordered
         else:
             loss = loss_unordered
         model = load_game(hp, loss, data_cfg.n_thematic_roles)
@@ -236,16 +236,15 @@ def main(params):
             sender_input = tuple(I.sender_input[i].view(-1).tolist())
             msg = I.message[i].argmax(1)
             gb_sender_input[sender_input][tuple(to_send.tolist())] = msg
+            # TODO problem: what if tuple(...) already exists in the dictionary? it erases it...
         dists = defaultdict(list)
         normalized_dists = defaultdict(list)
         concat_ordering = Counter()
         for sender_input, v in gb_sender_input.items():
-            #  v = sorted(v, key=lambda e: e[0].sum())
             v_one_object = [e for e in v.items() if sum(e[0]) == 1]
-            #  roles = [list(e[0]).index(1) for e in v_one_object]
-            #  # there are duplicates, simply b/c there are identical annotations
-            #  combinations = itertools.combinations(roles, 2)
+            #  roles = [to_send.index(1) for to_send, _ in v_one_object]
             combinations = itertools.combinations(range(len(v_one_object)), 2)
+            #  if 0 not in roles:
             for combination in combinations:
                 i, j = combination
                 if len(v_one_object) >= 2:
@@ -332,7 +331,6 @@ def main(params):
 
 
     arg_counts, pos_counts = count_argument_positions(I)
-    j = 0
     marker = 99
     try:
         roleset_permutations = dataset.roleset_permutations
@@ -344,6 +342,7 @@ def main(params):
     per_rolesets = defaultdict(list)
     per_to_send = defaultdict(list)
     single_object_messages = defaultdict(Counter)
+    single_object_roles = defaultdict(Counter)
     for i, loss_objs in enumerate(I.aux['loss_objs']):
         loss_objs = loss_objs.item()
         #  if loss_objs > 16:
@@ -358,7 +357,6 @@ def main(params):
             else:
                 to_send[k] = -1.
             #  if to_send[k] == 4:
-            #      import pdb; pdb.set_trace()
         roleset = int(I.aux['roleset'][i].item())
         # for debugging:
         #  if roleset == 880 or roleset == '880':
@@ -373,6 +371,7 @@ def main(params):
             idx_to_send = to_send_orig.index(1)
             arg_i = to_send[idx_to_send].item()
             single_object_messages[arg_i][tuple(m)] += 1
+            single_object_roles[arg_i][idx_to_send] += 1
             
         to_send_t = tuple(to_send.tolist())
         per_rolesets[roleset].append(
@@ -397,11 +396,21 @@ def main(params):
         #              print(m, to_send, loss_D, loss)
     print_limit = 30
     H_per_msg = []
+    j = 0
     for argument, count in arg_counts.most_common():
         all_msg = single_object_messages[j]
+        all_roles = single_object_roles[j]
+        # number of datapoints where 1 object must be sent, and this object is
+        # the j-th most frequent object. (count: object is present but it might
+        # not be to send, or there might be several objects to send, etc.)
         n = sum(all_msg.values())
         H = entropy_list(all_msg.values())
-        H_per_msg.append((argument, n, H))
+        H_roles = entropy_list(all_roles.values())
+        # interesting to compare H_1, the conditional entropy of the message given a
+        # single input to the conditional entropy of the role given a single
+        # input. If synthetic, H_1 should not go below this second metric,
+        # because each message should at least encode the role.
+        H_per_msg.append((argument, n, H, H_roles))
         if j <= print_limit:  
             print("Arg #{}: {} ({}) {}".format(j, argument, count,
                       pos_counts[argument]))
@@ -424,15 +433,15 @@ def main(params):
 
     H_json = os.path.join(dirname, 'per_arg_H_msg.json')
     with open(H_json, 'w') as fp:
-        sum_n = sum([n for _, n, _ in H_per_msg])
-        weighted_sum_H = sum([H*n for _, n, H in H_per_msg])
+        sum_n = sum([n for _, n, _, _ in H_per_msg])
+        weighted_sum_H = sum([H*n for _, n, H, _ in H_per_msg])
+        weighted_sum_H_role = sum([H_role*n for _, n, _, H_role in H_per_msg])
         avg_H_freq_weighted = float(weighted_sum_H) / float(sum_n)
+        avg_H_role = float(weighted_sum_H_role) / float(sum_n)
         data = {'H_per_msg': H_per_msg, 'freq_weighted_avg_H':
-                avg_H_freq_weighted}
+                avg_H_freq_weighted, 'freq_weighted_avg_H_role': avg_H_role}
         json.dump(data, fp)
     print("END")
-
-
 
 if __name__ == "__main__":
     import sys
