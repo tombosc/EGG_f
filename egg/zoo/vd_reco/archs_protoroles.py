@@ -12,6 +12,34 @@ from simple_parsing.helpers import Serializable
 
 _n_rolesets = 1639
 
+class FixedPositionalEmbeddings(nn.Module):
+    """ As in Vaswani 2017:
+    PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
+    PE(pos, 2i+1) = cos(pos / 10000^(2i/d_model))
+    """
+    def __init__(self, d_model, batch_first, pos_max=100):
+        super().__init__()
+        self.d_model = d_model
+        self.batch_first = batch_first
+        assert(d_model % 2 == 0)
+        arange = torch.arange(0, d_model//2).double()
+        denom = torch.exp(torch.log(torch.tensor([10000.])) * 2 * arange / self.d_model)
+        arange_pos = torch.arange(0, pos_max).double()
+        pre_sin = torch.mm(arange_pos.view(pos_max, 1),
+                           1 / denom.view(1, d_model // 2))
+        sin = torch.sin(pre_sin)
+        cos = torch.cos(pre_sin)
+        # (L, d)
+        self.emb = torch.cat((sin, cos), 1).float()
+
+    def forward(self, x):
+        self.emb = self.emb.to(x.device)
+        if self.batch_first:
+            bs, L, d = x.size()
+            return x + self.emb[:L,:].expand((bs, L, d))
+        else:
+            L, bs, d = x.size()
+            return x + self.emb[:L,:].unsqueeze(1).expand((L, bs, d))
 
 def maybe_FA_expand(flat_attention, mask):
     if flat_attention:
@@ -43,6 +71,7 @@ class Hyperparameters(Serializable):
     length_cost: float = 0.0
     flat_attention: bool = False
     predict_classical_roles: bool = False
+    version: float = 1.1
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -201,14 +230,20 @@ class Sender(nn.Module):
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
             n_thematic_roles, 
+            version,
             n_layers=3, n_head=8, distance_reg_coef=0.0, predict_roleset=False,
             flat_attention=False, predict_classical_roles=False):
         super(Receiver, self).__init__()
         self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
-        self.pos_msg_embedding = nn.Parameter(
-            torch.randn((1, max_len+1, dim_emb))
-        )
+        if version == 1.0:
+            self.pos_msg_embedding = nn.Parameter(
+                torch.randn((1, max_len+1, dim_emb))
+            )
+        elif version >= 1.1:
+            self.pos_msg_embedding = FixedPositionalEmbeddings(dim_emb,
+                    batch_first=True)
         # them all in one matrix, we need to add offsets
+        self.version = version
         self.embedder = Embedder(dim_emb, n_thematic_roles, flat_attention=flat_attention)
         activation = 'gelu'
         self.tfm = nn.Transformer(
@@ -249,7 +284,10 @@ class Receiver(nn.Module):
         embed_msg = self.msg_embedding(msg)
         # to debug:
         # embed_msg = torch.zeros_like(embed_msg)
-        embed_msg += self.pos_msg_embedding
+        if self.version == 1.0:
+            embed_msg += self.pos_msg_embedding
+        elif self.version >= 1.1:
+            embed_msg = self.pos_msg_embedding(embed_msg)
         roleset, properties, thematic_roles = receiver_inputs
         role_emb, obj_emb, _ = self.embedder(roleset, properties, thematic_roles)
         x = torch.cat((role_emb.unsqueeze(1), obj_emb), 1)
@@ -289,6 +327,7 @@ class TransformerSenderGS(nn.Module):
         hidden_size,
         temperature,
         dropout,
+        version,
         generate_style="standard",
         causal=True,
         distance_reg_coef=0.0,
@@ -312,7 +351,7 @@ class TransformerSenderGS(nn.Module):
         """
         super(TransformerSenderGS, self).__init__()
         self.agent = agent
-
+        self.version = version
         assert generate_style in ["standard", "in-place"]
         self.generate_style = generate_style
         self.causal = causal
@@ -345,6 +384,8 @@ class TransformerSenderGS(nn.Module):
         self.vocab_size = vocab_size
 
         self.embed_tokens = nn.Embedding(vocab_size, embed_dim)
+        if self.version >= 1.1:
+            self.pos_embed_tokens = FixedPositionalEmbeddings(embed_dim, batch_first=False)
         nn.init.normal_(self.embed_tokens.weight, mean=0, std=self.embed_dim ** -0.5)
         self.embed_scale = math.sqrt(embed_dim)
 
@@ -359,7 +400,7 @@ class TransformerSenderGS(nn.Module):
         special_symbol = (
             self.special_symbol_embedding.expand(1, batch_size, -1).to(device)
         )
-        input = special_symbol
+        input_no_pos = special_symbol
 
         for step in range(self.max_len):
             if self.causal:
@@ -378,6 +419,11 @@ class TransformerSenderGS(nn.Module):
                 else:
                     attn_mask = M
 
+            if self.version >= 1.1:
+                input = self.pos_embed_tokens(input_no_pos)
+            else:
+                input = input_no_pos
+
             output = self.decoder(
                 input, encoder_state, tgt_mask=attn_mask,
             )
@@ -386,16 +432,10 @@ class TransformerSenderGS(nn.Module):
                     step_logits, self.temperature, self.training, True,
                     False,
             )
-            # TODO symbol dropout
-            # TODO test time sampling
-
-            #  distr = Categorical(logits=step_logits)
-            #  sample = sample.long()
             distribs.append(distrib)
             sequence.append(sample)
-            #  new_embedding = self.embed_tokens(sample) * self.embed_scale
             new_embedding = torch.matmul(sample, self.embed_tokens.weight) * self.embed_scale
-            input = torch.cat([input, new_embedding.unsqueeze(dim=0)], dim=0)
+            input_no_pos = torch.cat([input_no_pos, new_embedding.unsqueeze(dim=0)], dim=0)
 
         return sequence, distribs
 
@@ -441,7 +481,6 @@ class TransformerSenderGS(nn.Module):
                 symbols = step_logits.argmax(dim=1)
             logits.append(distr.log_prob(symbols))
             sequence.append(symbols)
-
             new_embedding = self.embed_tokens(symbols) * self.embed_scale
             output.append(new_embedding.unsqueeze(dim=1))
 
@@ -609,6 +648,7 @@ def load_game(hp, loss_objs, n_thematic_roles):
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         max_len=hp.max_len,
         n_thematic_roles=n_thematic_roles, 
+        version=hp.version,
         n_layers=hp.receiver_nlayers,
         distance_reg_coef=hp.distance_reg_coef,
         predict_roleset=hp.predict_roleset,
@@ -631,6 +671,7 @@ def load_game(hp, loss_objs, n_thematic_roles):
         num_heads=8, hidden_size=hp.sender_hidden,
         temperature=hp.temperature,
         dropout=hp.dropout,
+        version=hp.version,
         causal=False,  # causal shouldn't matter, b/c only use the last token
         distance_reg_coef=hp.distance_reg_coef,
     )
