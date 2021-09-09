@@ -137,6 +137,7 @@ class Data(data.Dataset):
         For values of augment, please see prepare_inputs
         shuffle_roles: if True, for each verb, roles are going to be shuffled.
         """
+        self.n_thematic_roles = n_thematic_roles
         self.hide_to_send = hide_to_send
         rng = np.random.default_rng(seed)
         lines = []
