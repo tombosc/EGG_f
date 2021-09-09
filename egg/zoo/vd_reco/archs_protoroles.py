@@ -71,7 +71,7 @@ class Hyperparameters(Serializable):
     length_cost: float = 0.0
     flat_attention: bool = False
     predict_classical_roles: bool = False
-    version: float = 1.1
+    version: float = 1.0
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -626,6 +626,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["roleset"] = sender_input[0].float()
         aux["weighted_length_cost"] = weighted_length_cost
         aux["sender_input_to_send"] = sender_input[3].float()
+        aux['msg'] = message.argmax(2)
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
