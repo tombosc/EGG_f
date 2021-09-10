@@ -304,7 +304,7 @@ class Data(data.Dataset):
         # data consists in verb type and property matrix and verb type
         #  if type(i) == list:
         #      return [self.examples[e] for e in i]
-        return self.examples[i]
+        return self.examples[i] + (i,)
 
 def init_data(data_cfg, run_random_seed, batch_size):
     """ Everything data loading related here.

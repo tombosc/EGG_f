@@ -11,8 +11,6 @@ import os
 import torch
 import torch.nn.functional as F
 from torch.utils.data import (DataLoader, random_split, BatchSampler, RandomSampler)
-from torch.distributions import Categorical
-from functools import partial
 from scipy.optimize import linear_sum_assignment
 
 import egg.core as core
@@ -81,7 +79,7 @@ def loss_roles(receiver_output_role, labels):
             reduction="none")
 
 
-def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
+def loss_objs(_sender_input, _message, receiver_input,
         receiver_output_roles, receiver_output_objs, labels):
     labels_objs = labels[1]
     CE = F.cross_entropy(receiver_output_objs.permute(0,3,1,2), labels_objs,
@@ -91,14 +89,14 @@ def loss_objs(_sender_input, _message, distrib_message, _receiver_input,
     # so that I can decompose loss objectwise
     return CE.sum(2)
 
-def loss_ordered(_sender_input, _message, distrib_message, _receiver_input,
+def loss_ordered(_sender_input, _message, receiver_input,
         receiver_output_roles, receiver_output_objs, labels):
     """ With this loss, the 1st output vector is interpreted as 1st thematic role, 
     2nd vector as 2nd thematic role, etc. So the outputs are ordered according
     to thematic roles, and there is no matching problem. Receiver_output_roles
     is interpreted as a binary prediction of whether the object is missing or
     not. """
-    CE = loss_objs(_sender_input, _message, distrib_message, _receiver_input,
+    CE = loss_objs(_sender_input, _message, receiver_input,
         receiver_output_roles, receiver_output_objs, labels)
     # only non-missing objects count in the loss
     object_absent = (labels[4] == -1)
@@ -115,7 +113,7 @@ def loss_classical_roles(receiver_output_roles, labels):
             reduction="none")
     return CE
 
-def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
+def loss_unordered(_sender_input, _message, receiver_input,
         receiver_output_roles, receiver_output_objs, labels):
     raise NotImplementedError()  
     # TODO! broken, we need to only match the N (non-padding objects).
@@ -135,7 +133,7 @@ def loss_unordered(_sender_input, _message, distrib_message, _receiver_input,
     LO = []
     LR = []
     for perm in [[0, 1, 2], [1, 2, 0], [2, 0, 1]]:
-        LO_ = loss_objs(_sender_input, _message, distrib_message, 
+        LO_ = loss_objs(_sender_input, _message, 
                 _receiver_input, None, receiver_output_objs[:, perm], labels)
         LR_ = loss_classical_roles(receiver_output_roles[:, perm], labels)
         LO.append(LO_)

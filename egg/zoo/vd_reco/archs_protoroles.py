@@ -12,6 +12,15 @@ from simple_parsing.helpers import Serializable
 
 _n_rolesets = 1639
 
+def eos_mask(msg):
+    n_D = len(msg.size())
+    assert(n_D == 2 or n_D == 3)
+    L = find_lengths(msg, one_hot_encoded=(n_D == 3))
+    bs, max_len = msg.size()[:2]
+    mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1).to(msg.device) >=
+                L.unsqueeze(1))
+    return mask
+
 class FixedPositionalEmbeddings(nn.Module):
     """ As in Vaswani 2017:
     PE(pos, 2i) = sin(pos / 10000^(2i/d_model))
@@ -225,7 +234,7 @@ class Sender(nn.Module):
         else:
             x += (self.mark_tosend * marked.unsqueeze(2))
         # mask should be (bs, L), input should be (L, bs, dim)
-        return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask)
+        return self.encoder(x.transpose(0, 1), src_key_padding_mask=mask), mask
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout, max_len,
@@ -280,10 +289,12 @@ class Receiver(nn.Module):
         self.n_thematic_roles = n_thematic_roles
 
 
-    def forward(self, msg, receiver_inputs):
+    def forward(self, msg, receiver_inputs, ids):
+        """
+        ids: can be used for debugging purposes.
+        """
+        # RelaxedEmbeddings works for both 1hot enc msgs and discrete matrices
         embed_msg = self.msg_embedding(msg)
-        # to debug:
-        # embed_msg = torch.zeros_like(embed_msg)
         if self.version == 1.0:
             embed_msg += self.pos_msg_embedding
         elif self.version >= 1.1:
@@ -295,8 +306,14 @@ class Receiver(nn.Module):
             attn_mask = self.distance_matrix.to(x.device)
         else:
             attn_mask = None
-        y = self.tfm(embed_msg.transpose(0, 1), x.transpose(0, 1),
-                     src_mask=attn_mask)
+        msg_padding = eos_mask(msg)
+        embed_msg = embed_msg.masked_fill(msg_padding.unsqueeze(2), 0.)
+        y = self.tfm(src=embed_msg.transpose(0, 1),
+                     tgt=x.transpose(0, 1),
+                     src_mask=attn_mask,
+                     src_key_padding_mask=msg_padding,
+                     memory_key_padding_mask=msg_padding,
+                    )
         roleset_pred = self.out_roleset(y[0]) if self.out_roleset else None
         # role prediction:
         if self.flat_attention:
@@ -310,6 +327,12 @@ class Receiver(nn.Module):
             role_pred = self.out_role(y[1:]).transpose(0, 1)
         bs = msg.size(0)
         obj_pred = self.out_obj(y[1:]).transpose(0, 1).view(bs, 3, 18, 4)
+        # here's how we can use ids to debug and make sure we get the exact
+        # same values across calls. we can do the same thing in compute_loss
+        #  id_ = 7592  # or whatever
+        #  if torch.any(ids == id_):
+        #      i = (ids == id_).nonzero()[0,0]
+        #      print("RP", role_pred[i][0])
         return roleset_pred, role_pred, obj_pred
 
 
@@ -369,14 +392,6 @@ class TransformerSenderGS(nn.Module):
                 hidden_size, dropout, activation)
         self.decoder = nn.TransformerDecoder(decoder_layer, num_layers)
 
-        #  self.transformer = nn.TransformerDecoder(
-        #      embed_dim=embed_dim,
-        #      max_len=max_len,
-        #      num_layers=num_layers,
-        #      num_heads=num_heads,
-        #      hidden_size=hidden_size,
-        #  )
-
         self.embedding_to_vocab = nn.Linear(embed_dim, vocab_size)
 
         self.special_symbol_embedding = nn.Parameter(torch.zeros(1, 1, embed_dim))
@@ -389,7 +404,7 @@ class TransformerSenderGS(nn.Module):
         nn.init.normal_(self.embed_tokens.weight, mean=0, std=self.embed_dim ** -0.5)
         self.embed_scale = math.sqrt(embed_dim)
 
-    def generate_standard(self, encoder_state):
+    def generate_standard(self, encoder_state, encoder_state_mask):
         batch_size = encoder_state.size(1)
         device = encoder_state.device
 
@@ -426,6 +441,7 @@ class TransformerSenderGS(nn.Module):
 
             output = self.decoder(
                 input, encoder_state, tgt_mask=attn_mask,
+                memory_key_padding_mask=encoder_state_mask,
             )
             step_logits = self.embedding_to_vocab(output[-1])
             distrib, sample = gumbel_softmax_sample(
@@ -436,8 +452,61 @@ class TransformerSenderGS(nn.Module):
             sequence.append(sample)
             new_embedding = torch.matmul(sample, self.embed_tokens.weight) * self.embed_scale
             input_no_pos = torch.cat([input_no_pos, new_embedding.unsqueeze(dim=0)], dim=0)
-
         return sequence, distribs
+
+    def evaluate_proba_standard(self, sender_input, msgs):
+        encoder_state, encoder_state_mask = self.agent(sender_input)
+        bs = encoder_state.size(1)
+        device = encoder_state.device
+
+        sequence = []
+        logits = []
+        distribs = []
+
+        embedded_msgs = self.embed_tokens(msgs.transpose(0, 1)) * self.embed_scale
+
+        special_symbol = (
+            self.special_symbol_embedding.expand(1, bs, -1).to(device)
+        )
+        input_no_pos = torch.cat((special_symbol, embedded_msgs), 0)
+        if self.version >= 1.1:
+            input = self.pos_embed_tokens(input_no_pos)
+        else:
+            input = input_no_pos
+        max_len = input.size(0)
+
+        # !always with causal option here!
+        # at train time, we don't need it: we predict, embed, concatenate, and
+        # again... until the sequence is complete, and always use the last
+        # token to make the prediction. Here, we use all the tokens to predict
+        # all the next words at once, so we need it.
+        attn_mask = torch.triu(  # upper-tri w/o diagonal
+            torch.ones(max_len, max_len), diagonal=1
+        ).to(device)  # noqa: E226
+
+        if self.distance_reg_coef:
+            raise NotImplementedError()
+
+        output = self.decoder(
+            input, encoder_state, tgt_mask=attn_mask,
+            memory_key_padding_mask=encoder_state_mask,
+        )
+
+        logits = self.embedding_to_vocab(output)
+        log_probas = logits - torch.logsumexp(logits, 2, keepdim=True)
+        # ignore last prediction, because last position should contain an eos
+        log_probas = log_probas[:-1]
+        V = log_probas.size(-1)
+        flat_log_probas = log_probas.transpose(0, 1).reshape((-1, V))
+        flat_msg = msgs.view((-1))
+        ar = torch.arange(flat_log_probas.size(0))
+        sel_log_probas = flat_log_probas[ar, flat_msg]
+        sel_log_probas = sel_log_probas.view((bs, max_len-1))
+        L = find_lengths(msgs, one_hot_encoded=False)
+        mask = (torch.arange(max_len-1).unsqueeze(0).expand(bs, -1).to(msgs.device) >=
+                    L.unsqueeze(1))
+        masked_log_probas = sel_log_probas.masked_fill(mask, 0)
+        return masked_log_probas.sum(1)
 
     def generate_inplace(self, encoder_state):
         raise NotImplementedError()
@@ -487,10 +556,11 @@ class TransformerSenderGS(nn.Module):
         return sequence, logits, entropy
 
     def forward(self, x):
-        encoder_state = self.agent(x)
+        encoder_state, encoder_state_mask = self.agent(x)
 
         if self.generate_style == "standard":
-            sequence, distribs = self.generate_standard(encoder_state)
+            sequence, distribs = self.generate_standard(encoder_state,
+                    encoder_state_mask)
         elif self.generate_style == "in-place":
             sequence, logits, entropy = self.generate_inplace(encoder_state)
         else:
@@ -564,17 +634,23 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         self.ada_len_cost_thresh = ada_len_cost_thresh
 
-    def forward(self, sender_input, labels, receiver_input=None):
-        message, distribs = self.sender(sender_input)
-        # turn all tokens after the 1st eos has been emitted to eos
-        L = find_lengths(message, one_hot_encoded=True)
-        bs, max_len, _ = message.size()
-        mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1).to(message.device) >=
-                    L.unsqueeze(1))
-        message[:,:,0].masked_fill_(mask, 1)  # eos
-        message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
-        receiver_outputs = self.receiver(message, receiver_input)
+    def eval_proba_sender(self, sender_input, msgs):
+        self.eval()
+        return self.sender.evaluate_proba_standard(sender_input, msgs)
 
+    def eval_loss_receiver(self, sender_input, labels, receiver_input, msgs,
+            ids):
+        self.eval()
+        receiver_outputs = self.receiver(msgs, receiver_input, ids)
+
+        losses = self.compute_loss(
+            sender_input, labels, receiver_input, receiver_outputs, msgs,
+            one_hot_message=False, ids=ids,
+        )
+        return losses, losses['sum'], losses['sum'] - losses['length']
+
+    def compute_loss(self, sender_input, labels, receiver_input,
+            receiver_outputs, message, one_hot_message, ids):
         if self.loss_rolesets:
             loss_rolesets = self.loss_rolesets(receiver_outputs[0], labels)
         else:
@@ -582,7 +658,6 @@ class SenderReceiverTransformerGS(nn.Module):
         maybe_packed_losses = self.loss_objs(
             sender_input,
             message,
-            distribs,
             receiver_input,
             receiver_outputs[1], 
             receiver_outputs[2],
@@ -601,7 +676,10 @@ class SenderReceiverTransformerGS(nn.Module):
             length_loss_coef = loss_objs < self.ada_len_cost_thresh
         else:
             length_loss_coef = 1
-        unweighted_length_cost = (1 - message[:, :, 0]).sum(1)
+        if one_hot_message:
+            unweighted_length_cost = (1 - message[:, :, 0]).sum(1)
+        else:
+            unweighted_length_cost = (message != 0).sum(1)
         weighted_length_cost = (self.length_cost * length_loss_coef *
                 unweighted_length_cost)
         loss = (
@@ -610,23 +688,43 @@ class SenderReceiverTransformerGS(nn.Module):
             loss_roles +
             weighted_length_cost
         )
+        out = {'sum': loss, 'rolesets': loss_rolesets, 'roles': loss_roles,
+                'roles_D': loss_roles_entity_wise, 'objs': loss_objs,
+                'objs_D': loss_objs_entity_wise, 'length': weighted_length_cost,
+        }
+        return out
 
+    def forward(self, sender_input, labels, receiver_input, ids):
+        message, distribs = self.sender(sender_input)
+        # turn all tokens after the 1st eos has been emitted to eos
+        L = find_lengths(message, one_hot_encoded=True)
+        bs, max_len, _ = message.size()
+        mask = (torch.arange(max_len).unsqueeze(0).expand(bs, -1).to(message.device) >=
+                    L.unsqueeze(1))
+        message[:,:,0].masked_fill_(mask, 1)  # eos
+        message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
+
+        receiver_outputs = self.receiver(message, receiver_input, ids)
+        loss = self.compute_loss(sender_input, labels, receiver_input,
+            receiver_outputs, message, one_hot_message=True, ids=ids)
         aux = {}
         aux["length"] = L.float()
         aux["gram_funcs"] = labels[2].float()
         if not torch.all(labels[3] == 0).item():
             aux["permutation"] = labels[3]
         if self.loss_rolesets:
-            aux["loss_rolesets"] = loss_rolesets
-        if type(loss_roles) != int:
-            aux["loss_classical_roles"] = loss_roles
-            aux["loss_classical_roles_D"] = loss_roles_entity_wise
-        aux["loss_objs"] = loss_objs
-        aux["loss_objs_D"] = loss_objs_entity_wise
+            aux["loss_rolesets"] = loss['rolesets']
+        if type(loss['roles']) != int:
+            aux["loss_classical_roles"] = loss['roles']
+            aux["loss_classical_roles_D"] = loss['roles_D']
+        aux["loss_objs"] = loss['objs']
+        aux["loss_objs_D"] = loss['objs_D']
         aux["roleset"] = sender_input[0].float()
-        aux["weighted_length_cost"] = weighted_length_cost
+        aux["weighted_length_cost"] = loss['length']
         aux["sender_input_to_send"] = sender_input[3].float()
-        aux['msg'] = message.argmax(2)
+        aux['ids'] = ids.float()  # very useful to debug.
+        # I don't want to change the API of interactions so I add it here.
+        aux['loss'] = loss['sum']
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
@@ -641,7 +739,7 @@ class SenderReceiverTransformerGS(nn.Module):
             message_length=L.float().detach(),
             aux=aux,
         )
-        return loss.mean(), interaction
+        return loss['sum'].mean(), interaction
 
 def load_game(hp, loss_objs, n_thematic_roles):
     receiver = Receiver(

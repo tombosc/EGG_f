@@ -81,13 +81,10 @@ class Tester(unittest.TestCase):
                    "1,0": 0, "2,0": 0, "1,2": 0}
         T_score, edges = compute_transitivity(perfect, 1500)
         self.assertTrue(T_score == 1.0)
-
         # when one key is missing, it should still work!
         ex = {"0,1": 1701, "0,2": 411, "2,1": 517, "2,0": 2, "1,2": 3}
         T_score, edges = compute_transitivity(ex, 3500) 
         self.assertTrue(T_score != 0.0)
-
-
 
     def test_intransitive(self):
         # in this test, the heuristic from compute_transitivity fails and it
