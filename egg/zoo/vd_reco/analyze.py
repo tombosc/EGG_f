@@ -24,16 +24,13 @@ import egg.core as core
 from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
-from .archs_protoroles import Hyperparameters, load_game
 from .train_vl import loss_ordered, loss_unordered
-#  from .data_proto import init_data as init_data_proto
-from .data_proto import Data as DataProto, init_data as init_data_proto
 from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from simple_parsing import ArgumentParser
 from egg.core import Trainer
-import egg.core.util as util
-from egg.core.distributed import not_distributed_context
 from .callbacks import entropy_list
+from .utils import load_model_data_from_cp, init_common_opts_reloading
+from .utils_transitivity import compute_transitivity
 
 
 def normalized_levenshtein(msg1, msg2, substitution_cost):
@@ -61,38 +58,6 @@ def pad_list(msg, n):
         return msg
     return msg + list((0,) * (n - len(msg)))
 
-def get_model_data(params):
-    parser = ArgumentParser()
-    parser.add_argument('checkpoint', type=str)
-    parser.add_argument('--topsim', action='store_true')
-    parser.add_argument('--topsim_option', default='')
-    parser.add_argument('--compo', action='store_true')
-    parser.add_argument('--compo_option', default='')
-    #  parser.add_argument('train_interactions', type=str)
-    args = parser.parse_args(params)
-    dirname = os.path.dirname(args.checkpoint)
-    dataset_json = os.path.join(dirname, 'data.json')
-    with open(dataset_json, 'r') as f:
-        json_data = json.load(f)
-        dataset_name = json_data["dataset"]
-    checkpoint = torch.load(args.checkpoint, map_location=torch.device('cpu'))
-    hp_json = os.path.join(dirname, 'hp.json')
-    if dataset_name == 'proto':
-        data_cfg = DataProto.Settings.load(dataset_json)
-        dataset, train_data, valid_data, test_data = init_data_proto(data_cfg, 0, 128)
-        hp = Hyperparameters.load(hp_json)
-        if not hp.predict_classical_roles:
-            loss = loss_ordered
-        else:
-            loss = loss_unordered
-        model = load_game(hp, loss, data_cfg.n_thematic_roles)
-        model.load_state_dict(checkpoint.model_state_dict)
-    else:
-        raise ValueError('Unknown dataset', dataset_name)
-    #  train_interactions = torch.load(args.train_interactions)
-    return args, dirname, model, dataset, train_data, valid_data, test_data
-
-
 def count_argument_positions(interactions):
     arguments_counts = Counter()
     position_counts_per_arg = defaultdict(Counter)
@@ -109,20 +74,19 @@ def count_argument_positions(interactions):
 
 
 def main(params):
+    # parse arguments
+    parser = ArgumentParser()
+    parser.add_argument('checkpoint', type=str)
+    parser.add_argument('--topsim', action='store_true')
+    parser.add_argument('--topsim_option', default='')
+    parser.add_argument('--compo', action='store_true')
+    parser.add_argument('--compo_option', default='')
+    args = parser.parse_args(params)
     np.random.seed(0)
-    args, dirname, model, dataset, train_data, valid_data, test_data = get_model_data(params)
-    util.common_opts = argparse.Namespace()
-    util.no_distributed = True
-    util.common_opts.preemptable = False
-    util.common_opts.validation_freq = 0
-    util.common_opts.update_freq = 0
-    util.common_opts.checkpoint_dir = None
-    util.common_opts.checkpoint_freq = 0
-    util.common_opts.checkpoint_best = ""
-    util.common_opts.tensorboard = False
-    util.common_opts.fp16 = False
-    util.common_opts.load_from_checkpoint = None
-    util.common_opts.distributed_context = not_distributed_context()
+
+    dirname, hp, model, dataset, train_data, valid_data, test_data = \
+        load_model_data_from_cp(args.checkpoint)
+    init_common_opts_reloading()
 
     #  evaluator = Trainer(model, None, train_data, valid_data, 'cpu', None, None, False)
     split = 'train'
@@ -291,17 +255,18 @@ def main(params):
         # For each set of pairs (like {0,1}), pick the order that minimizes the
         # distance (like (0,1)). Sum those distances.
         def sum_global_min(A):
-            return int(
-                min(np.sum(A[(0,1)]), np.sum(A[(1,0)])) + 
-                min(np.sum(A[(0,2)]), np.sum(A[(2,0)])) + 
-                min(np.sum(A[(1,2)]), np.sum(A[(2,1)]))
-            )
+            A1 = np.vstack([A[(0, 1)], A[(1, 0)]])
+            A2 = np.vstack([A[(0, 2)], A[(2, 0)]])
+            A3 = np.vstack([A[(2, 1)], A[(1, 2)]])
+            return (A1.sum(1).min() + A2.sum(1).min() + A3.sum(1).min())
+
         def sum_local_min(A):
             A1 = np.vstack([A[(0, 1)], A[(1, 0)]])
             A2 = np.vstack([A[(0, 2)], A[(2, 0)]])
             A3 = np.vstack([A[(2, 1)], A[(1, 2)]])
             return (A1.min(0).sum() + A2.min(0).sum() + A3.min(0).sum())
 
+        n_compared = sum([len(v) for v in dists.values()])
         sum_unnorm_dists = sum_global_min(dists)
         sum_norm_dists = sum_global_min(normalized_dists)
         sum_local_unnorm_dists = sum_local_min(dists)
@@ -310,6 +275,8 @@ def main(params):
         n = sum(n_combinations)
         concat_ordering = {','.join([str(e) for e in k]): v for k, v in
                   concat_ordering.items()}
+        transitivity, edges = compute_transitivity(concat_ordering,
+                total=n_compared)
         with open(compo_json, 'w') as fp:
             data = {
                 'n': n,
@@ -318,6 +285,8 @@ def main(params):
                 'sum_norm': sum_norm_dists / float(n),
                 'sum_local_norm': sum_local_norm_dists / float(n),
                 'order': concat_ordering,
+                'n_compared': n_compared,
+                'transitivity': transitivity,
                 #  'n': len(distances),
                 #  'mean': distances.mean(),
                 #  'std': distances.std(),
