@@ -723,6 +723,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["weighted_length_cost"] = loss['length']
         aux["sender_input_to_send"] = sender_input[3].float()
         aux['ids'] = ids.float()  # very useful to debug.
+        aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
         aux['loss'] = loss['sum']
 
