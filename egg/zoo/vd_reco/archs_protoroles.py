@@ -476,13 +476,14 @@ class TransformerSenderGS(nn.Module):
         max_len = input.size(0)
 
         # !always with causal option here!
-        # at train time, we don't need it: we predict, embed, concatenate, and
-        # again... until the sequence is complete, and always use the last
-        # token to make the prediction. Here, we use all the tokens to predict
-        # all the next words at once, so we need it.
+        # at train time, we don't need it: in a for loop, we predict, embed,
+        # concatenate, until the sequence is complete, and always use the last
+        # token to make the prediction. Here, we use all the tokens at once 
+        # (not within a for loop) to predict all the next words at once, so 
+        # we need this mask.
         attn_mask = torch.triu(  # upper-tri w/o diagonal
-            torch.ones(max_len, max_len), diagonal=1
-        ).to(device)  # noqa: E226
+            torch.ones(max_len, max_len), diagonal=1,
+        ).to(device).bool()  # noqa: E226
 
         if self.distance_reg_coef:
             raise NotImplementedError()
@@ -493,9 +494,11 @@ class TransformerSenderGS(nn.Module):
         )
 
         logits = self.embedding_to_vocab(output)
+        logits = logits / self.temperature
+        # normalize
         log_probas = logits - torch.logsumexp(logits, 2, keepdim=True)
         # ignore last prediction, because last position should contain an eos
-        log_probas = log_probas[:-1]
+        log_probas = log_probas[:-1]  # L, bs, V
         V = log_probas.size(-1)
         flat_log_probas = log_probas.transpose(0, 1).reshape((-1, V))
         flat_msg = msgs.view((-1))
