@@ -1,5 +1,3 @@
-# Copyright (c) Facebook, Inc. and its affiliates.
-
 # This source code is licensed under the MIT license found in the
 # LICENSE file in the root directory of this source tree.
 
@@ -68,23 +66,24 @@ def main(params):
     # parse arguments
     parser = ArgumentParser()
     parser.add_argument('checkpoint', type=str)
-    parser.add_argument('--compo_option', default='')
+    parser.add_argument('split', type=str)
+    parser.add_argument('--truncate', action='store_true',
+            help='When concatenation m1.m2 is longer than max_len, truncate. Use training probability distribution on finite-lengths messages.')
     args = parser.parse_args(params)
     np.random.seed(0)
 
     dirname, hp, model, dataset, train_data, valid_data, test_data = \
         load_model_data_from_cp(args.checkpoint)
-    max_len = hp.max_len
     init_common_opts_reloading()
 
-    #  evaluator = Trainer(model, None, train_data, valid_data, 'cpu', None, None, False)
-    split = 'train'
-    if split == 'train':
+    if args.split == 'train':
         data = train_data
-    elif split == 'valid':
+    elif args.split == 'valid':
         data = valid_data
-    elif split == 'test':
+    elif args.split == 'test':
         data = test_data
+    else:
+        raise ValueError(f"Split {args.split} unknown!")
     evaluator = Trainer(model, None, train_data, data, 'cpu', None, None, False)
     loss_valid, I = evaluator.eval()
     # I save the ids as floats (because EGG wants to compute means of all the
@@ -100,10 +99,7 @@ def main(params):
         print("Score path not found. Loss:", loss_valid)
 
     n = 0
-    n_ctx = 0
-    options = args.compo_option.split(',')
     # check options are correct
-    sub_cost = 2
     N = len(I.aux['length'])
     # build a dict indexed by speaker's input matrix, which value is another
     # dict indexed by speaker's to send matrix, which value is the message sent
@@ -160,36 +156,39 @@ def main(params):
                 n_send_1 = list(to_send_1).index(1)
                 n_send_2 = list(to_send_2).index(1)
                 to_send_sum = tuple(np.asarray(to_send_1) + np.asarray(to_send_2))
-                msg_sum = v.get(to_send_sum, None)
+                m_ref = v.get(to_send_sum, None)
 
-            if msg_sum is not None:
+            if m_ref is not None:
                 # get its id:
                 ID = ids_to_inputs[sender_input][to_send_sum]
-                n = len(msg_1.tolist())
-                cut_msg_1 = remove_padding_list(msg_1.tolist())
-                cut_msg_2 = remove_padding_list(msg_2.tolist())
-                concats = [cut_msg_1 + cut_msg_2,
-                           cut_msg_2 + cut_msg_1]
-                order = [(n_send_1, n_send_2), (n_send_2, n_send_1)]
-                msg_sum = remove_padding_list(msg_sum.tolist())
+                m1 = remove_padding_list(msg_1.tolist())
+                m2 = remove_padding_list(msg_2.tolist())
                 def to_array(l):
-                    return torch.tensor(pad_list(l, 2*(hp.max_len) + 1))
-                all_msgs = (to_array(msg_sum),  # the reference message
-                    to_array(concats[0]),  # should be [msg1,msg2] concat
-                    to_array(concats[1]),  # should be [msg1,msg2] concat
-                    to_array(cut_msg_1),  # original msg1, but need to repad
-                    to_array(cut_msg_2),
+                    if args.truncate:
+                        return torch.tensor(pad_list(l, hp.max_len + 1))
+                    else:
+                        return torch.tensor(pad_list(l, 2*(hp.max_len) + 1))
+                m12, m21 = to_array(m1 + m2), to_array(m2 + m1)
+                if args.truncate:
+                    m12 = m12[:hp.max_len + 1]
+                    m21 = m21[:hp.max_len + 1]
+                    m12[-1] = 0
+                    m21[-1] = 0
+                m_ref = remove_padding_list(m_ref.tolist())
+                all_msgs = (
+                    to_array(m_ref),  # the reference message
+                    m12,
+                    m21,
+                    # original single messages
+                    to_array(m1),  
+                    to_array(m2),
                 )
                 triplets_messages.append((
                     ID,
                     all_msgs,  
                     np.asarray([n_send_1, n_send_2]),  # indicating roles
-                    (len(cut_msg_1), len(cut_msg_2)),
+                    (len(m1), len(m2)),
                 ))
-
-    #  # use DataLoader:
-    #  def collate(d):
-    #      import pdb; pdb.set_trace()
 
     data = []
     for ID, msgs, to_send, lengths in triplets_messages:
@@ -202,15 +201,9 @@ def main(params):
                 lengths))
 
     data = DataLoader(data, shuffle=False, batch_size=K*128)  #, collate_fn=collate)
-    log_prob_diffs = defaultdict(list)  # compare against reference message
-    log_prob_sm_diffs = defaultdict(list)  # against best single message
-    loss_diffs = defaultdict(list)
-    loss_diffs_norm = defaultdict(list)
-    loss_best_diffs = defaultdict(list)
-    loss_sm_diffs = defaultdict(list)
-    log_prob_best_diffs = defaultdict(list)
-    ordering_loss_diffs = Counter()
-    ordering_proba_diffs = Counter()
+    def create_storage_analysis():
+        return [defaultdict(list) for _ in range(6)] + [Counter() for _ in range(2)]
+    diffs_simple_concatenation = create_storage_analysis()
     pair_roles_counts = Counter()  
     N_dbg_I = 1
     dbg_I = I.aux['ids'][:N_dbg_I]
@@ -226,75 +219,86 @@ def main(params):
     with torch.no_grad():
         for sender_in, labels, receiver_in, msgs, to_send, ID, lengths in data:
             S = to_send[0::K]  # TODO assert all close with [1::K], [2::K]
-
-            probas = model.eval_proba_sender(sender_in, msgs)
+            probas = model.eval_proba_sender(sender_in, msgs, has_max_len=False)
             losses, sum_loss, loss = model.eval_loss_receiver(sender_in,
                     labels, receiver_in, msgs, ID)
             ref_proba, p12, p21 = probas[0::K], probas[1::K], probas[2::K]
             p1, p2 = probas[3::K], probas[4::K]
             ref_loss, l12, l21 = loss[0::K], loss[1::K], loss[2::K]
             l1, l2 = loss[3::K], loss[4::K]
-            for i in range(S.size(0)):
-                if ID[::K][i] in dbg_I:
-                    print(f"ID={ID[::K][i]}:", dbg_I)
-                    print([k + "=" + str(v[::K][i]) for k, v in losses.items() if
-                        type(v) != int])
-                n_send_1 = S[i, 0].item()
-                n_send_2 = S[i, 1].item()
-                p12_diff = (p12[i] - ref_proba[i]).item()  
+
+            def compute_store_metrics(p12, p21, l12, l21,
+                    l_diffs, lP_diffs, l_best_diffs, lP_best_diffs,
+                    l_sm_diffs, lP_sm_diffs, 
+                    ordering_loss_diffs, ordering_prob_diffs,
+                ):
+                """ Compute various metrics and store them.
+                """
                 # p12_diff = log(p(m12)/p(m*)), if >0 then p(m12) > p(m*) where m*
                 # is the reference message, the one actually output by the speaker
-                p21_diff = (p21[i] - ref_proba[i]).item()
-                log_prob_diffs[(n_send_1, n_send_2)].append(p12_diff)
-                log_prob_diffs[(n_send_2, n_send_1)].append(p21_diff)
-                idx_sm_diff = tuple(sorted((n_send_1, n_send_2)))
+                p12_diff = p12 - ref_proba
+                p21_diff = p21 - ref_proba
+                # l12_diff > 0 ↔ l12 > ref_loss
+                l12_diff = ref_loss - l12
+                l21_diff = ref_loss - l21
+                # removed
+                #  l12_diff_norm = l12_diff / ref_loss
+                #  l21_diff_norm = l21_diff / ref_loss
+                for i in range(S.size(0)):
+                    _, ref_l_sanity_check = find_loss(ID[i*K])
+                    assert(torch.allclose(ref_l_sanity_check, sum_loss[i*K]))
+                    pos1, pos2 = S[i].tolist()
+                    pos12, pos21 = (pos1, pos2), (pos2, pos1)
+                    idx_sm_diff = tuple(sorted(pos12))
+                    lP_diffs[pos12].append(p12_diff[i].item())
+                    lP_diffs[pos21].append(p21_diff[i].item())
+                    l_diffs[pos12].append(l12_diff[i].item())
+                    l_diffs[pos21].append(l21_diff[i].item())
+                    # these are concatenability metrics, since they min/max over order
+                    l_best_diffs[idx_sm_diff].append(
+                        ref_loss[i].item() - min(l12[i].item(), l21[i].item())
+                    )
+                    lP_best_diffs[idx_sm_diff].append(
+                        max(p12[i].item(), p21[i].item()) - ref_proba[i].item()
+                    )
+                    # we can also check how the concatenation compares to using a
+                    # single message.
+                    # l_sm_diffs > 0 ↔ min(l1, l2) > ref_loss
+                    # so real message is better than either m1 or m2 when > 0
+                    l_sm_diffs[idx_sm_diff].append(
+                        min(l1[i].item(), l2[i].item()) - ref_loss[i].item()
+                    )
+                    lP_sm_diffs[idx_sm_diff].append(
+                        ref_proba[i].item() - max(p1[i].item(), p2[i].item()) 
+                    )
+                    if l12[i].item() < l21[i].item():
+                        ordering_loss_diffs[pos12] += 1
+                    else:
+                        ordering_loss_diffs[pos21] += 1
+                    if p12[i].item() > p21[i].item():
+                        ordering_prob_diffs[pos12] += 1
+                    else:
+                        ordering_prob_diffs[pos21] += 1
+
+            compute_store_metrics(
+                p12, p21, l12, l21, 
+                *diffs_simple_concatenation,
+            )
+            for i in range(S.size(0)):
+                #  if ID[::K][i] in dbg_I:
+                #      print(f"ID={ID[::K][i]}:", dbg_I)
+                #      print([k + "=" + str(v[::K][i]) for k, v in losses.items() if
+                #          type(v) != int])
+                pos1, pos2 = S[i].tolist()
+                pos12, pos21 = (pos1, pos2), (pos2, pos1)
+                idx_sm_diff = tuple(sorted(pos12))
                 str_idx_sm_diff = str(idx_sm_diff[0]) + "," + str(idx_sm_diff[1])
                 pair_roles_counts[str_idx_sm_diff] += 1
-                _, ref_l_sanity_check = find_loss(ID[i*K])
-                assert(torch.allclose(ref_l_sanity_check, sum_loss[i*K]))
 
-                l12_diff = (ref_loss[i] - l12[i]).item()
-                # l12_diff > 0 ↔ l12 > ref_loss
-                l21_diff = (ref_loss[i] - l21[i]).item()
-                loss_diffs[(n_send_1, n_send_2)].append(l12_diff)
-                loss_diffs[(n_send_2, n_send_1)].append(l21_diff)
-                loss_diffs_norm[(n_send_1, n_send_2)].append(l12_diff /
-                        ref_loss[i])
-                loss_diffs_norm[(n_send_2, n_send_1)].append(l21_diff /
-                        ref_loss[i])
-                loss_diffs_norm[(n_send_2, n_send_1)].append(l21_diff /
-                        ref_loss[i])
-                loss_best_diffs[idx_sm_diff].append(
-                    ref_loss[i] - min(l12[i].item(), l21[i].item())
-                )
-                if l12[i].item() < l21[i].item():
-                    # we could use a counter, but the code is made for lists
-                    ordering_loss_diffs[(n_send_1, n_send_2)] += 1
-                else:
-                    ordering_loss_diffs[(n_send_2, n_send_1)] += 1
-                if p12[i].item() > p21[i].item():
-                    # we could use a counter, but the code is made for lists
-                    ordering_proba_diffs[(n_send_1, n_send_2)] += 1
-                else:
-                    ordering_proba_diffs[(n_send_2, n_send_1)] += 1
-
-                loss_sm_diffs[idx_sm_diff].append(
-                    ref_loss[i] - min(l1[i].item(), l2[i].item())
-                )
-                log_prob_best_diffs[idx_sm_diff].append(
-                    max(p12[i].item(), p21[i].item()) - ref_proba[i]
-                )
-                log_prob_sm_diffs[idx_sm_diff].append(
-                    max(p1[i].item(), p2[i].item()) - ref_proba[i]
-                )
-
-
-    if options:
-        compo_json = os.path.join(
-            dirname, 'compo_' + args.compo_option + '.json',
-        )
-    else:
-        compo_json = os.path.join(dirname, 'compo.json')
+    filename_wo_ext = 'concat_' + args.split
+    if args.truncate:
+        filename_wo_ext += '_trunc'
+    compo_json = os.path.join(dirname, filename_wo_ext + '.json')
 
     # For each set of pairs (like {0,1}), pick the order that minimizes the
     # distance (like (0,1)). Sum those distances.
@@ -320,15 +324,13 @@ def main(params):
         n_compared = sum(diffs.values())
         diffs = {','.join([str(e) for e in k]): v for k, v in
                   diffs.items()}
-        transitivity, edges = compute_transitivity(diffs,
-                total=n_compared)
+        transitivity, edges = compute_transitivity(diffs, total=n_compared)
         edges = [str(a) + "," + str(b) for a, b in edges]
         return {'transitivity': transitivity,
                 'n_compared': n_compared,
                 'edges': edges,
         }
-    transitivity_listener = compute_T(ordering_loss_diffs)
-    transitivity_speaker = compute_T(ordering_proba_diffs)
+
     def prepare_dict(d):
         prepared_d = {}
         for k, v in d.items():
@@ -338,20 +340,22 @@ def main(params):
             prepared_d[key + '_n'] = torch.tensor(v).size(0)
         return prepared_d
 
+    def add_to_data(list_containers, data, suffix):
+        data['loss_diffs' + suffix] = prepare_dict(list_containers[0])
+        data['log_prob_diffs' + suffix] = prepare_dict(list_containers[1])
+        data['loss_best_diffs' + suffix] = prepare_dict(list_containers[2])
+        data['log_prob_best_diffs' + suffix] = prepare_dict(list_containers[3])
+        data['loss_sm_diffs' + suffix] = prepare_dict(list_containers[4])
+        data['log_prob_sm_diffs' + suffix] = prepare_dict(list_containers[5])
+        data['transitivity_listener' + suffix] = compute_T(list_containers[6])
+        data['transitivity_speaker' + suffix] = compute_T(list_containers[7])
+
     with open(compo_json, 'w') as fp:
-        data = {}
-        data['loss_diffs'] = prepare_dict(loss_diffs)
-        data['loss_diffs_norm'] = prepare_dict(loss_diffs_norm)
-        data['loss_best_diffs'] = prepare_dict(loss_best_diffs)
-        data['log_prob_best_diffs'] = prepare_dict(log_prob_best_diffs)
-        data['loss_sm_diffs'] = prepare_dict(loss_sm_diffs)
-        data['log_prob_diffs'] = prepare_dict(log_prob_diffs)
-        data['transitivity_listener'] = transitivity_listener
-        data['transitivity_speaker'] = transitivity_speaker
-        data['pair_roles_counts'] = dict(pair_roles_counts)
-        #  data['MI_symbol_role'] = MI_symbol_role
-        print(data)
-        json.dump(data, fp)
+        d = {}
+        add_to_data(diffs_simple_concatenation, d, suffix='')
+        d['pair_roles_counts'] = dict(pair_roles_counts)
+        print(d)
+        json.dump(d, fp)
     exit()
 
 if __name__ == "__main__":

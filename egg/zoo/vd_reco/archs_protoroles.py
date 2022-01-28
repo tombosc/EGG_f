@@ -454,7 +454,16 @@ class TransformerSenderGS(nn.Module):
             input_no_pos = torch.cat([input_no_pos, new_embedding.unsqueeze(dim=0)], dim=0)
         return sequence, distribs
 
-    def evaluate_proba_standard(self, sender_input, msgs):
+    def evaluate_proba_standard(self, sender_input, msgs, has_max_len):
+        """ if we use this function on messages that are sampled using 
+        functions from this class, we get msgs like 
+        [sos, msg(0), ..., msg(max_len), eos] 
+        where sos and eos are start and end of sentence special tokens.
+        The sampling method implies that after max_len - 1 tokens were
+        emitted, eos has probability 1. But when has_max_len=False,
+        then we evaluate probabilities under a slightly difference probability
+        distribution where sequence lengths are potentially inifinite.
+        """
         encoder_state, encoder_state_mask = self.agent(sender_input)
         bs = encoder_state.size(1)
         device = encoder_state.device
@@ -473,7 +482,7 @@ class TransformerSenderGS(nn.Module):
             input = self.pos_embed_tokens(input_no_pos)
         else:
             input = input_no_pos
-        max_len = input.size(0)
+        L_size = input.size(0)
 
         # !always with causal option here!
         # at train time, we don't need it: in a for loop, we predict, embed,
@@ -482,7 +491,7 @@ class TransformerSenderGS(nn.Module):
         # (not within a for loop) to predict all the next words at once, so 
         # we need this mask.
         attn_mask = torch.triu(  # upper-tri w/o diagonal
-            torch.ones(max_len, max_len), diagonal=1,
+            torch.ones(L_size, L_size), diagonal=1,
         ).to(device).bool()  # noqa: E226
 
         if self.distance_reg_coef:
@@ -497,18 +506,31 @@ class TransformerSenderGS(nn.Module):
         logits = logits / self.temperature
         # normalize
         log_probas = logits - torch.logsumexp(logits, 2, keepdim=True)
-        # ignore last prediction, because last position should contain an eos
+        # for an input [sos, a, b, c, eos, eos, eos],
+        # the 1st output should predict a, the 2nd b, etc. So we discard the
+        # last one
         log_probas = log_probas[:-1]  # L, bs, V
         V = log_probas.size(-1)
         flat_log_probas = log_probas.transpose(0, 1).reshape((-1, V))
         flat_msg = msgs.view((-1))
         ar = torch.arange(flat_log_probas.size(0))
         sel_log_probas = flat_log_probas[ar, flat_msg]
-        sel_log_probas = sel_log_probas.view((bs, max_len-1))
+        sel_log_probas = sel_log_probas.view((bs, L_size-1))
         L = find_lengths(msgs, one_hot_encoded=False)
-        mask = (torch.arange(max_len-1).unsqueeze(0).expand(bs, -1).to(msgs.device) >=
+        mask = (torch.arange(L_size-1).unsqueeze(0).expand(bs, -1).to(msgs.device) >=
                     L.unsqueeze(1))
         masked_log_probas = sel_log_probas.masked_fill(mask, 0)
+        if has_max_len:
+            # here all sequences have maximum length of
+            # self.max_len (not counting the eos token)
+            # therefore, probability of sequence with length greater than
+            # max_len is 0!
+            mask_too_long = (L > self.max_len + 1).unsqueeze(1).to(masked_log_probas.device)
+            masked_log_probas = masked_log_probas.masked_fill(mask_too_long, float('-inf'))
+            # and the eos token in the last position has probability 1!
+            after_max_len = (torch.arange(L_size - 1) >=
+                    self.max_len).unsqueeze(0).to(masked_log_probas.device)
+            masked_log_probas = masked_log_probas.masked_fill(after_max_len, 0.0)
         return masked_log_probas.sum(1)
 
     def generate_inplace(self, encoder_state):
@@ -637,9 +659,10 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         self.ada_len_cost_thresh = ada_len_cost_thresh
 
-    def eval_proba_sender(self, sender_input, msgs):
+    def eval_proba_sender(self, sender_input, msgs, has_max_len=True):
         self.eval()
-        return self.sender.evaluate_proba_standard(sender_input, msgs)
+        return self.sender.evaluate_proba_standard(sender_input, msgs,
+                has_max_len)
 
     def eval_loss_receiver(self, sender_input, labels, receiver_input, msgs,
             ids):
