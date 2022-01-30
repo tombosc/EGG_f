@@ -33,32 +33,33 @@ class Data(data.Dataset):
         n_thematic_roles: int = 3
 
     @staticmethod
-    def compactify(L, set_properties, n_thematic_roles):
-        """ In L, every element contains a single property value for a certain
-        verb token and a certain argument of that verb token. This function
-        turns it into a list where there is only one element per verb token.
-        We store all properties in a 2D array where the rows indicate the arg
-        number (which has a meaning in terms of classical roles).
+    def aggregate(L, set_properties, n_thematic_roles):
+        """ Every element of L contains 1 property value annotated for 1 
+        verb token and a 1 argument of that verb token. This function
+        aggregates L into a list where there is only 1 element per verb token:
+        it stores all properties in a 2D array where the rows index the arg
+        number (which has a meaning in terms of classical roles) and the
+        columns index the property.
         """
         compacted = {}
         ordered_properties = sorted(list(set_properties))
         numbered_prop = {p: i for i, p in enumerate(ordered_properties)}
-        #  print("Numbered prop", numbered_prop)
+        print("Numbered prop", numbered_prop)
         n_prop = len(set_properties)
         arg_pos_per_key = defaultdict(set)
         for l in L:
             arg = int(l['Arg'])
             if arg >= n_thematic_roles:
                 continue
-            # why do we need such a long index?
+            key = (l['Sentence.ID'], l['Pred.Token'], arg)#, l['Arg.Pos'])
+            # The key is there to aggregate different elements of L into a
+            # single VerbTokenArg in a new list. Why such a key?
             # - there are several sentences
             # - in each sentence, there might be several verb tokens 
             # - for each verb token, there are often several arguments
-            # - for each argument, there might be several Arg.Pos? This doesn't
-            #   make sense to me. If we don't, we have 9704 instead of 9738 ex
-            #   I remove the duplicates, see below.
-            key = (l['Sentence.ID'], l['Pred.Token'], arg)#, l['Arg.Pos'])
-            # TODO do that above, will save time
+            # - for each argument, there might be several Arg.Pos? I don't
+            #   understand that, but if we omit, we get 9704 instead of 9738 
+            #   elements. I remove the duplicates, see arg_pos_per_key.
             entry = compacted.get(key, None)
             arg_pos_per_key[key].add(l['Arg.Pos'])
             if not entry:
@@ -71,12 +72,11 @@ class Data(data.Dataset):
                 compacted[key] = entry
             applicable = eval(l['Applicable'])
             if not applicable:
-                # nothing to do, b/c array is initialized to N/A value = 0
+                # skip assigment of prop, b/c array is initialized to NA (0)
                 continue
-            # add the property
+            # assign property
             k = numbered_prop[l['Property']]
-            response = l['Response']
-            entry.properties[k] = response
+            entry.properties[k] = l['Response']
         # I don't understand how this can be, so I remove these for now
         # it's only a small minority (we get 9670 lines instead of 9738)
         problematic_keys = set([k for k, v in arg_pos_per_key.items() if len(v) > 1])
@@ -84,8 +84,8 @@ class Data(data.Dataset):
         for e in compacted.values():
             for i in range(e.properties.shape[0]):
                 # diminish # of categories: since ordinal data is treated as
-                # categorical data and 2 and 4 ratings are very rare, it is
-                # better to convert them.
+                # categorical data and 2 and 4 ratings are rare, we might
+                # as well convert them
                 if e.properties[i] == 2:
                     e.properties[i] = 1
                 if e.properties[i] == 4:
@@ -93,8 +93,10 @@ class Data(data.Dataset):
         print("total sentence, tokens and arguments:", len(compacted))
         # compacted is indexed by sentence_id AND argument number
         # we now want to build a new representation only indexed by sentence_id
-        # indeed, a datapoint is going to consist in an event with several
-        # arguments
+        # that is, aggregate all the arguments of the same verb token into a 
+        # single data structure.
+        # indeed, a datapoint fed to the model is going to consist in an event
+        # with several arguments
         tokens = {}
         idx_gram_func = {'subj': 0, 'obj': 1, 'other': 2}
         count_args = Counter()
@@ -120,14 +122,10 @@ class Data(data.Dataset):
                 properties = verb_token.properties
             properties[arg, :] = vta.properties
             verb_token.classical_roles[arg] = arg
-            #  if np.all(vta.properties == 0):
-            #      print("Error?")
-            #      print(vta)
             verb_token.gram_funcs[arg] = idx_gram_func[vta.gram_func]
         print("total sentences and verb tokens:", len(tokens))
         print("args count", count_args)
         return tokens, ordered_properties
-
 
     def __init__(self, seed=0, n_thematic_roles=3, 
                  fn="protoroles_eng_pb/protoroles_eng_pb_08302015.tsv",
@@ -152,46 +150,49 @@ class Data(data.Dataset):
                 lines.append(line)
         # then, turn each one of them into a list of integers
         verb_tokens, self.ordered_properties = \
-                self.compactify(lines, set_properties, n_thematic_roles)
+                self.aggregate(lines, set_properties, n_thematic_roles)
         # we can now group all verb tokens to get the distribution over types
         def present_roles(vt):
-            #  n_total = vt.properties.shape[0]
-            not_0 = tuple((vt.properties != 0).any(1))
-            return not_0
-
-        def n_roles(vt):
-            #  n_total = vt.properties.shape[0]
-            not_0 = (vt.properties != 0).any(1).sum()
-            return not_0
+            # (vt.classical_roles[j] == -1) iff no entity takes the jth role
+            return tuple((vt.classical_roles != -1))
+        # I got rid of all examples (48 examples) where all entities only 
+        # have NA features, but I don't remember why I decided to do that and 
+        # forgot about it. Consider it a small bug left for reproducibility...
+        def n_non_NA(vt):
+            return (vt.properties != 0).any(1).sum()
+        keys_all_NA = [k for k, vt in verb_tokens.items() if n_non_NA(vt) == 0]
+        print("removing {} examples where all features of all entities are NA (n_thematic_roles={})".format(
+            len(keys_all_NA), n_thematic_roles))
+        # show repartition of roles
         counts = Counter([present_roles(vt) for vt in verb_tokens.values()])
-        keys_all_0 = [k for k, vt in verb_tokens.items() if n_roles(vt) == 0]
-        print("removing {} examples which have no roles (n_thematic_roles={})".format(
-            len(keys_all_0), n_thematic_roles))
-        print(counts)
-        verb_tokens = {k: v for k, v in verb_tokens.items() if k not in keys_all_0}
+        print("Role distribution across examples:", counts)
+        verb_tokens = {k: v for k, v in verb_tokens.items() if k not in keys_all_NA}
         # we need to encode the roleset (the verb + an ID for polysemy) as an integer
         #  role_counters = Counter([vt.roleset for vt in verb_tokens.values()])
-        rolesets = sorted(list(set([vt.roleset for vt in verb_tokens.values()])))
-        self.idx_roleset = {role: i for i, role in enumerate(rolesets)}
+        self.ordered_rolesets = sorted(list(set([vt.roleset for vt in verb_tokens.values()])))
+        self.roleset2idx = {role: i for i, role in enumerate(self.ordered_rolesets)}
         examples = []
         # we have to iterate over the sorted keys to stay deterministic...
         sorted_keys = sorted(verb_tokens.keys())
         if shuffle_roles:
-            self.roleset_permutations = [rng.permutation(n_thematic_roles) for _ in self.idx_roleset]
+            self.roleset_permutations = [rng.permutation(n_thematic_roles) for
+                    _ in self.roleset2idx]
         for k in sorted_keys:
             v = verb_tokens[k]
-            i = self.idx_roleset[v.roleset]
+            i = self.roleset2idx[v.roleset]
             if shuffle_roles:
                 perm = self.roleset_permutations[i]
                 properties = v.properties[perm]
                 gram_funcs = v.gram_funcs[perm]
                 roles = v.classical_roles[perm]
-                example = (properties, gram_funcs, i, perm.astype(float), roles)
+                example = (properties, gram_funcs, i, perm.astype(float),
+                        roles, v.sentence_id)
             else:
                 properties = v.properties
                 gram_funcs = v.gram_funcs
                 roles = v.classical_roles
-                example = (properties, gram_funcs, i, None, roles)
+                example = (properties, gram_funcs, i, None, roles,
+                        v.sentence_id)
             examples.append(example)
         # 1. augment the dataset to hide some slots
         self.examples = []
@@ -212,7 +213,7 @@ class Data(data.Dataset):
 
     @staticmethod
     def prepare_inputs(properties, gram_funcs, id_roleset, permutation,
-            thematic_roles, augment, hide_to_send):
+            thematic_roles, sentence_id, augment, hide_to_send):
         """ Given an example consisting of properties and their grammatical
         functions (-1 if unused, 0 if subj, 1 if obj, 2 if other), this
         function returns a list of inputs (sender_inputs, labels, receiver_inputs)
@@ -244,7 +245,7 @@ class Data(data.Dataset):
                     incomplete_th_roles)
             zero = np.zeros(1)
             labels = [id_roleset, properties, gram_funcs, zero,
-                    thematic_roles]
+                    thematic_roles, sentence_id]
             if permutation is not None:
                 labels[3] = permutation
             labels = tuple(labels)
@@ -282,9 +283,9 @@ class Data(data.Dataset):
             example stays in the same split with the original one.
         """
         assert(sum(ratios) == 1.0)
-        # importantly, we do not create permutations on self.examples!
-        # we create permutations on the lists of ids that essentially encode
-        # the same "situation"!
+        # importantly, we do not create permutations on self.examples directly
+        # we create permutations on the lists of ids that encodes
+        # the same "situation".
         n_ids = len(self.tied_ids)
         group_indices = torch.randperm(n_ids, generator=generator).tolist()
         # let's deal with non-integerness that way:
@@ -301,10 +302,85 @@ class Data(data.Dataset):
         return len(self.examples)
 
     def __getitem__(self, i):
-        # data consists in verb type and property matrix and verb type
-        #  if type(i) == list:
-        #      return [self.examples[e] for e in i]
         return self.examples[i] + (i,)
+
+    def count_arguments(self, loader):
+        args = Counter()
+        for e in loader:
+            inputs_S, labels, inputs_R, id_ = e
+            assert(labels[4].size(0) == 1)  # batch size should be 1!
+            thematic_roles = labels[4][0]
+            properties = labels[1][0]
+            for pos, role in enumerate(thematic_roles):
+                if role == -1:
+                    continue
+                args[tuple(properties[pos].tolist())] += 1
+        return args
+    
+    def get_entity_repr(self, prop2idx, properties, thematic_roles):
+        """ From a property array and classical roles (-1 if missing, 0, 1, or
+        2 else), return an array with entities number of -1 if entity is
+        missing, -2 if it is unknown.
+        """
+        indices = []
+        for role, prop in zip(thematic_roles, properties):
+            idx = prop2idx.get(tuple(prop.tolist()), -2) if role != -1 else -1
+            indices.append(idx)
+        return tuple(indices)
+
+    def count_arg_tuples(self, prop2idx, loader):
+        arg_tuples = Counter()
+        for e in loader:
+            inputs_S, labels, inputs_R, id_ = e
+            assert(labels[4].size(0) == 1)  # batch size should be 1!
+            thematic_roles = labels[4][0]
+            properties = labels[1][0]
+            entities = self.get_entity_repr(prop2idx, properties, thematic_roles)
+            arg_tuples[entities] += 1
+        return arg_tuples
+ 
+
+    def print_filtered_examples(self, arg_index, prop2idx, entities=None,
+            roleset=None, use_nltk=True, skip_shown=True):
+        """ Find the list of examples with entities and roleset in the train
+        set.
+        Can set either params to None to disable filtering on these.
+        """
+        assert(entities is not None or roleset is not None or split is not None)
+        if entities is not None and type(entities) == tuple:
+            entities_array = np.asarray([list(arg_index[e]) for e in entities])
+        elif entities is not None and type(entities) == int:
+            entity_array = np.asarray(list(arg_index[entities]))
+        elif entities is not None:
+            raise NotImplementedError()
+        if use_nltk:
+            from nltk.corpus import ptb
+        already_shown = set()
+        for i, e in enumerate(self.examples):
+            inputs_S, labels, inputs_R = e
+            thematic_roles = labels[4]
+            properties = labels[1]
+            example_roleset = labels[0]
+            if (roleset is not None) and (example_roleset != roleset):
+                continue
+            if (entities is not None):
+                if type(entities) == tuple and (not np.allclose(entities_array, labels[1])):
+                    continue
+                if type(entities) == int:
+                    matching_role = (entity_array == labels[1]).all(1)
+                    if not matching_role.any():
+                        continue
+            if labels[5] in already_shown and skip_shown:
+                continue
+            filename, sent_id = labels[5].split('_')
+            if use_nltk:
+                dirname = filename[:2]
+                tokens = ptb.sents(fileids=f"WSJ/{dirname}/WSJ_{filename}.MRG")[int(sent_id)]
+                role = self.ordered_rolesets[example_roleset]
+                E = self.get_entity_repr(prop2idx, properties, thematic_roles)
+                print(f"----- verb={role}, entities={E}")
+                print(f"Sentence {i}:" + " ".join(tokens))
+                already_shown.add(labels[5])
 
 def init_data(data_cfg, run_random_seed, batch_size):
     """ Everything data loading related here.
@@ -318,22 +394,51 @@ def init_data(data_cfg, run_random_seed, batch_size):
                    )
     ratios = (data_cfg.train_ratio, data_cfg.valid_ratio,
               1 - (data_cfg.train_ratio + data_cfg.valid_ratio))
-    # test data will be used to test after model selection
-    # prob in another script
     train_data, valid_data, test_data = all_data.random_split(ratios, data_gen)
-    # data order is determind by same random seed as model parameter, not as
-    # dataset 
+    # data ordering determined by same random seed as model params,
+    # not as dataset random seed (which determines train/test split)
     shuffle_gen = torch.Generator()
     shuffle_gen.manual_seed(run_random_seed)
-    # couldn't get that to work, but luckily there's an undocumented generator
+    # BatchSampler didn't work, but luckily there's an undocumented generator
     # parameter for DataLoader.
-    #  train_sampler = BatchSampler(
-    #      RandomSampler(data), generator=shuffle_gen),
-    #      batch_size=opts.batch_size, drop_last=False,
-    #  )
-    #  train_loader = DataLoader(train_data, sampler=train_sampler)
     train_loader = data.DataLoader(train_data, batch_size=batch_size,
             shuffle=True, generator=shuffle_gen)
     valid_loader = data.DataLoader(valid_data, batch_size=batch_size)
     test_loader = data.DataLoader(test_data, batch_size=batch_size)
     return all_data, train_loader, valid_loader, test_loader
+
+if __name__ == '__main__':
+    data_cfg = Data.Settings.load('res_proto_1B_adam/c62c94b2c6149580d5a354d984a3287a_I/data.json')
+    data, trainDL, validDL, testDL = init_data(data_cfg, 0, 1);
+    # when we want to filter on entity 8, we mean the 8+1th most frequent
+    # entity in the train set. This matches how the qualitative analysis
+    # script analysis.py numbers unique entities.
+    # here, we use different code because we don't use interactions (obtained
+    # by putting data through model) but iterate thru data loader.
+    count_arguments = data.count_arguments(trainDL)
+    idx2prop = {idx: prop for idx, (prop, c) in enumerate(count_arguments.most_common())}
+    prop2idx = {p: i for i, p in idx2prop.items()}
+    ####### GENERALISATION
+    # Are there tuples not seen at test time?
+    arg_tuples_train = data.count_arg_tuples(prop2idx, trainDL)
+    arg_tuples_test = data.count_arg_tuples(prop2idx, testDL)
+    in_test_not_in_train = {T: c for T, c in arg_tuples_test.items() if T not in arg_tuples_train}
+    in_test_in_train = {T: c for T, c in arg_tuples_test.items() if T in arg_tuples_train}
+    # 4 is all 0
+    #  print("8, 5, -1")
+    #  data.print_filtered_examples(idx2prop, entities=(8,5,4), use_nltk=True)
+    #  print("-1, 8, 5")
+    #  data.print_filtered_examples(idx2prop, entities=(4,8,5), use_nltk=True)
+    #  print("65, 8, 4")
+    #  for roleset in [431, 410, 804, 805, 1532, 327]:
+    #      data.print_filtered_examples(idx2prop, prop2idx, roleset=roleset,
+    #          use_nltk=True, skip_shown=False)
+    data.print_filtered_examples(idx2prop, prop2idx, entities=7, use_nltk=True)
+    ###### Similar annotations?
+    # Created & existed before seems to be mutually exclusive.
+    # That's true in most cases: 
+    # Counter({(1, 3): 1284, (1, 2): 198, (3, 1): 158, (0, 1): 98, (0, 0): 95, (0, 2): 82, (2, 2): 79, (0, 3): 76, (1, 1): 69, (2, 1): 58, (3, 0): 21, (2, 0): 11, (1, 0): 7})
+    #  count_created_existed_before = Counter()
+    #  for idx, prop in idx2prop.items():
+    #      count_created_existed_before[(prop[4], prop[7])] += 1
+    #  import pdb; pdb.set_trace()

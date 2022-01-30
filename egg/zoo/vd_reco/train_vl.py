@@ -74,7 +74,7 @@ def entropy(probs):
 
 
 def loss_roles(receiver_output_role, labels):
-    labels_role, _, _, _ = labels
+    labels_role, _, _, _, _ = labels
     return F.cross_entropy(receiver_output_role, labels_role,
             reduction="none")
 
