@@ -713,7 +713,7 @@ class SenderReceiverTransformerGS(nn.Module):
         if self.free_symbols > 0:
             # free_symbols is the # of free symbols besides eos
             unweighted_length_cost = unweighted_length_cost * (
-                unweighted_length_cost > self.free_symbols+1))
+                unweighted_length_cost > (self.free_symbols+1))
 
         weighted_length_cost = (self.length_cost * length_loss_coef *
             unweighted_length_cost)
