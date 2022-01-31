@@ -69,13 +69,14 @@ class Hyperparameters(Serializable):
     sender_emb: int = 32  # size of embeddings of Sender (default: 10)
     #  receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
     sender_mask_padded: bool = False
-    max_len: int = 3 
+    max_len: int = 3
     vocab_size: int = 64
     mode: str = 'gs'
     predict_roleset: bool = False
     temperature: float = 1.0
     # these are more like optimisation params, but...
     ada_len_cost_thresh: float = 0.0
+    free_symbols: int = 0
     distance_reg_coef: float = 0.0
     length_cost: float = 0.0
     flat_attention: bool = False
@@ -615,6 +616,7 @@ class SenderReceiverTransformerGS(nn.Module):
         loss_objs, 
         length_cost=0.0,
         ada_len_cost_thresh=0,
+        free_symbols=0,
         train_logging_strategy = None,
         test_logging_strategy = None,
     ):
@@ -658,6 +660,7 @@ class SenderReceiverTransformerGS(nn.Module):
             else test_logging_strategy
         )
         self.ada_len_cost_thresh = ada_len_cost_thresh
+        self.free_symbols = free_symbols
 
     def eval_proba_sender(self, sender_input, msgs, has_max_len=True):
         self.eval()
@@ -702,12 +705,18 @@ class SenderReceiverTransformerGS(nn.Module):
             length_loss_coef = loss_objs < self.ada_len_cost_thresh
         else:
             length_loss_coef = 1
+
         if one_hot_message:
             unweighted_length_cost = (1 - message[:, :, 0]).sum(1)
         else:
             unweighted_length_cost = (message != 0).sum(1)
+        if self.free_symbols > 0:
+            # free_symbols is the # of free symbols besides eos
+            unweighted_length_cost = unweighted_length_cost * (
+                unweighted_length_cost > self.free_symbols+1))
+
         weighted_length_cost = (self.length_cost * length_loss_coef *
-                unweighted_length_cost)
+            unweighted_length_cost)
         loss = (
             loss_rolesets +
             loss_objs +
@@ -806,5 +815,6 @@ def load_game(hp, loss_objs, n_thematic_roles):
             loss_objs=loss_objs,
             length_cost = hp.length_cost,
             ada_len_cost_thresh = hp.ada_len_cost_thresh,
+            free_symbols = hp.free_symbols,
     )
     return game
