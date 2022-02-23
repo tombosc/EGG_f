@@ -8,6 +8,7 @@ import math
 from egg.core.interaction import LoggingStrategy
 from egg.core.util import find_lengths
 from dataclasses import dataclass
+from collections import namedtuple
 from simple_parsing.helpers import Serializable
 
 _n_rolesets = 1639
@@ -60,8 +61,8 @@ def maybe_FA_expand(flat_attention, mask):
 @dataclass
 class Hyperparameters(Serializable):
     sender_nlayers: int = 2
-    receiver_nlayers: int = 2
-    sender_hidden: int = 10  # size of hidden layer of Sender (default: 10)
+    receiver_nlayers: int = 1
+    sender_hidden: int = 200  # size of hidden layer of Sender (default: 10)
     #  receiver_hidden: int = 10  # size of hidden layer of Receiver (default: 10)
     sender_cell: str = 'tfm'
     receiver_cell: str = 'tfm'
@@ -207,10 +208,18 @@ class Sender(nn.Module):
         self.mark_tosend = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
         self.flat_attention = flat_attention
         self.mask_padded = mask_padded
+        self.mask_inverse_debug_ = False
+
+    def set_mask_inverse_debug(self, val):
+        assert(type(val) == bool)
+        self.mask_inverse_debug_ = val
 
     def forward(self, input_):
         roleset, properties, thematic_roles, marked = input_
         role_emb, obj_emb, mask_padding = self.embedder(roleset, properties, thematic_roles)
+        if self.mask_inverse_debug_:
+            marked = (1-marked)  # TODO this should be a boolean
+            mask_padding = ~mask_padding
         # mark positions that need to be sent.
         # we do not mask the other positions, so that the sender can take into
         # account the other arguments that are visible to the receiver in order
@@ -404,6 +413,11 @@ class TransformerSenderGS(nn.Module):
             self.pos_embed_tokens = FixedPositionalEmbeddings(embed_dim, batch_first=False)
         nn.init.normal_(self.embed_tokens.weight, mean=0, std=self.embed_dim ** -0.5)
         self.embed_scale = math.sqrt(embed_dim)
+        self.test_time_sampling_ = False
+
+    def set_test_time_sampling(self, val):
+        assert(type(val) == bool)
+        self.test_time_sampling_ = val
 
     def generate_standard(self, encoder_state, encoder_state_mask):
         batch_size = encoder_state.size(1)
@@ -424,8 +438,8 @@ class TransformerSenderGS(nn.Module):
                     torch.ones(step + 1, step + 1).byte(), diagonal=1
                 ).to(
                     device
-                )  # noqa: E226
-                attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
+                ).bool()  # noqa: E226
+                #  attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
             else:
                 attn_mask = None
             if self.distance_reg_coef:
@@ -447,13 +461,124 @@ class TransformerSenderGS(nn.Module):
             step_logits = self.embedding_to_vocab(output[-1])
             distrib, sample = gumbel_softmax_sample(
                     step_logits, self.temperature, self.training, True,
-                    False,
+                    self.test_time_sampling_,
             )
             distribs.append(distrib)
             sequence.append(sample)
             new_embedding = torch.matmul(sample, self.embed_tokens.weight) * self.embed_scale
             input_no_pos = torch.cat([input_no_pos, new_embedding.unsqueeze(dim=0)], dim=0)
         return sequence, distribs
+
+    def generate_beam_search(self, encoder_state, encoder_state_mask):
+        if self.distance_reg_coef:
+            # TODO abandonned. remove?
+            raise NotImplementedError() 
+
+        beam_S = self.beam_size
+        _, batch_S, embed_dim = encoder_state.size()
+        device = encoder_state.device
+
+        logits = []
+        distribs = []
+
+        special_symbol = (
+            self.special_symbol_embedding.expand(1, batch_S * beam_S, -1).to(device)
+        )
+        input_no_pos = special_symbol
+
+        # Can't treat special symbol as part of the sequence, since it is not
+        # in the embedding matrix. 
+        def embed_beams(beams):
+            symbols = []
+            for beams_row in beams:
+                symbols.extend([beam.partial_msg for beam in beams_row]) 
+            symbols = torch.tensor(symbols)  # (batch_S, beam_S)
+            new_embedding = self.embed_tokens(symbols) * self.embed_scale
+            return torch.cat([special_symbol, new_embedding.transpose(0, 1)], dim=0)
+        def get_final_sequence(beams):
+            symbols = []
+            for beams_row in beams:
+                symbols.extend([beam.partial_msg for beam in beams_row]) 
+            symbols = torch.tensor(symbols)[::beam_S]  # (batch_S, beam_S)
+            #  return symbols.transpose(0, 1)
+            vocab_S = self.embed_tokens.weight.size(0)
+            one_H = torch.nn.functional.one_hot(symbols, num_classes=vocab_S)
+            return one_H.transpose(0, 1).float()
+
+        # init beams
+        beams = []  # list of list of (sequence of symbols, log proba)
+        BeamElement = namedtuple('BeamElement', ['partial_msg', 'log_proba'])
+        for i in range(batch_S):
+            beams_for_i = [BeamElement(partial_msg=(), log_proba=0.0) for _ in range(beam_S)]
+            beams.append(beams_for_i)
+
+        log_prob_beam = torch.zeros((batch_S * beam_S))
+        # expand inputs of tfm for beam search
+        encoder_state = encoder_state.unsqueeze(2).expand(-1, -1, beam_S, -1)
+        encoder_state = encoder_state.reshape(-1, beam_S * batch_S, embed_dim)
+        if encoder_state_mask is not None:
+            encoder_state_mask = encoder_state_mask.unsqueeze(1).expand(-1, beam_S, -1)
+            encoder_state_mask = encoder_state_mask.reshape(beam_S*batch_S, -1)
+
+        for step in range(self.max_len):
+            if self.causal:
+                attn_mask = torch.triu(
+                    torch.ones(step + 1, step + 1).byte(), diagonal=1
+                ).to(device).bool()  # noqa: E226
+            else:
+                attn_mask = None
+
+            if self.version >= 1.1:
+                input = self.pos_embed_tokens(input_no_pos)
+            else:
+                input = input_no_pos
+            
+            output = self.decoder(
+                input, encoder_state, tgt_mask=attn_mask,
+                memory_key_padding_mask=encoder_state_mask,
+            )
+            logits = self.embedding_to_vocab(output[-1])  # (bs x B, V)
+            logits = logits / self.temperature
+            step_log_p = logits - torch.logsumexp(logits, 1, keepdim=True)
+            log_prob_topk, symbols_topk = step_log_p.topk(beam_S, dim=1)
+            new_beams = []
+            for i, beams_row in enumerate(beams):
+                # iterate of each element of the batch size
+                # for each element, we're going to select beam_S best beams
+                # among beam_S * beam_S stored in candidates
+                begin = i*beam_S
+                end = (i+1)*beam_S
+                j = 0
+                candidates = set()
+                for row_log_p, row_symbols in zip(
+                        log_prob_topk[begin:end], symbols_topk[begin:end]
+                    ):
+                    pre_beam = beams_row[j]
+                    prev_symbols = pre_beam.partial_msg
+                    for log_p, sym in zip(row_log_p, row_symbols):
+                        real_log_p = log_p.item()
+                        real_sym = sym.item()
+                        if len(prev_symbols) and prev_symbols[-1] == 0:  # eos
+                            real_log_p = 0
+                            real_sym = 0
+                        candidates.add(
+                            BeamElement(
+                                partial_msg=prev_symbols + (real_sym,),
+                                log_proba = real_log_p + pre_beam.log_proba,
+                            )
+                        )
+                    j += 1
+                #  if step == 3:
+                #      import pdb; pdb.set_trace()
+                selected = sorted(candidates, key=lambda f: f.log_proba, reverse=True)[:beam_S]
+                new_beams.append(selected)
+            beams = new_beams
+            input_no_pos = embed_beams(beams)
+            #  distribs.append(distrib)
+        sequence = get_final_sequence(beams)
+        sequence = [s for s in sequence]
+        return sequence, distribs
+
 
     def evaluate_proba_standard(self, sender_input, msgs, has_max_len):
         """ if we use this function on messages that are sampled using 
@@ -587,11 +712,13 @@ class TransformerSenderGS(nn.Module):
         if self.generate_style == "standard":
             sequence, distribs = self.generate_standard(encoder_state,
                     encoder_state_mask)
+        elif self.generate_style == "beam_search":
+            sequence, distribs = self.generate_beam_search(encoder_state,
+                    encoder_state_mask)
         elif self.generate_style == "in-place":
             sequence, logits, entropy = self.generate_inplace(encoder_state)
         else:
             assert False, "Unknown generate style"
-
         sequence = torch.stack(sequence).transpose(1, 0)  # bs, L, vocab_size
         #  logits = torch.stack(logits).permute(1, 0)
         #  entropy = torch.stack(entropy).permute(1, 0)

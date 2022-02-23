@@ -77,6 +77,7 @@ def main(params):
     # parse arguments
     parser = ArgumentParser()
     parser.add_argument('checkpoint', type=str)
+    parser.add_argument('--beam-search', default=0, type=int)
     parser.add_argument('--topsim', action='store_true')
     parser.add_argument('--topsim_option', default='')
     parser.add_argument('--compo', action='store_true')
@@ -96,6 +97,11 @@ def main(params):
         data = valid_data
     elif split == 'test':
         data = test_data
+
+    if args.beam_search > 0:
+        model.sender.generate_style = 'beam_search'
+        model.sender.beam_size = args.beam_search
+
     evaluator = Trainer(model, None, train_data, data, 'cpu', None, None, False)
     loss_valid, I = evaluator.eval()
     score_path_json = os.path.join(dirname, 'best_scores.json')
