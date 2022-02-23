@@ -156,7 +156,7 @@ class Trainer:
         else:
             self.scaler = None
 
-    def eval(self):
+    def eval(self, n_times=1):
         mean_loss = 0.0
         interactions = []
 
@@ -165,18 +165,19 @@ class Trainer:
         with torch.no_grad():
             for batch in self.validation_data:
                 batch = move_to(batch, self.device)
-                optimized_loss, interaction = self.game(*batch)
-                if (
-                    self.distributed_context.is_distributed
-                    and self.aggregate_interaction_logs
-                ):
-                    interaction = Interaction.gather_distributed_interactions(
-                        interaction
-                    )
-                interaction = interaction.to("cpu")
-                mean_loss += optimized_loss
-                n_batches += 1
-                interactions.append(interaction)
+                for i in range(n_times):
+                    optimized_loss, interaction = self.game(*batch)
+                    if (
+                        self.distributed_context.is_distributed
+                        and self.aggregate_interaction_logs
+                    ):
+                        interaction = Interaction.gather_distributed_interactions(
+                            interaction
+                        )
+                    interaction = interaction.to("cpu")
+                    mean_loss += optimized_loss
+                    n_batches += 1
+                    interactions.append(interaction)
         mean_loss /= n_batches
         full_interaction = Interaction.from_iterable(interactions)
 
