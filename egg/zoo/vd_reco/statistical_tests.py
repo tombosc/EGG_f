@@ -8,7 +8,7 @@ from scipy.stats import spearmanr
 import argparse
 
 from egg.zoo.vd_reco.utils_analyze import (
-    listdict2dictlist, parse_log,
+    listdict2dictlist, parse_log, common_filter_runs,
 )
 
 def retrieve_results(directories):
@@ -227,18 +227,11 @@ if __name__ == '__main__':
             help='All directories containing subdirectories with experiment results')
     args = parser.parse_args()
     df = retrieve_results(args.exp_dirs)
+    df = common_filter_runs(df)
 
-    print("Filtering out collapsed runs:")
-    len_before_filtering = len(df)
-    df = df[df['final_length'] > 2.0]
-    df = df[df['final_length'] < 7.0]
-    print("average lengths after filtering")
-    import pdb; pdb.set_trace()
-    print(df[['final_length_1.0', 'final_length_2.0', 'final_length_3.0']].mean())
     print("average length differences:")
     print("length2 - length1", (df['final_length_2.0'] - df['final_length_1.0']).mean())
     print("length3 - length2", (df['final_length_3.0'] - df['final_length_2.0']).mean())
-    print(f"Before filtering: #{len_before_filtering}, after: #{len(df)}")
     same_edges = df[df['trans_L_edges'] == df['trans_S_edges']]
     print(f"There are {len(same_edges)} runs with consistent transitivity out of {len(df)}")
     def filter_above_median(dataframe, fields):

@@ -40,3 +40,17 @@ def parse_log(fn):
         train_logs = listdict2dictlist(train_logs)
         test_logs = listdict2dictlist(test_logs)
         return cfg, train_logs, test_logs
+
+def common_filter_runs(df):
+    """ Both for producing tables & plots, we need to use the same filtering.
+    Voluntarily does not take any filter parameters.
+    """
+    min_filter, max_filter = 2.0, 7.0
+    print(f"Filter out runs with avg length < {min_filter}, > {max_filter}")
+    len_before_filtering = len(df)
+    df = df[df['final_length'] > 2.0]
+    df = df[df['final_length'] < 7.0]
+    print(f"Before = {len_before_filtering}, after = {len(df)}")
+    print("Final lengths:")
+    print(df[['final_length_1.0', 'final_length_2.0', 'final_length_3.0']].mean())
+    return df
