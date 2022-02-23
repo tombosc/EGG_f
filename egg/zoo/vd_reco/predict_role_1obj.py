@@ -107,14 +107,14 @@ def main(params):
     if os.path.exists(score_path_json):
         with open(score_path_json, 'r') as f:
             best_score = float(json.load(f)['best_score'])
-        assert(np.abs(loss_val - best_score) < 1e-3, (
+        assert np.abs(loss_val - best_score) < 1e-3, (
             f'Model loading problem? Computed valid score {loss_val} vs'
             f' stored score {best_score}'
-        ))
+        )
     else:
         print("Valid score not found. Couldn't check model loaded correctly.")
     def dloader(data_split, shuffle):
-        X = data_split.aux['msg'].detach().to(device)
+        X = data_split.aux['msg'].detach().to(device).long() 
         to_send = data_split.aux['sender_input_to_send']
         y = (to_send.argmax(1) - 1).to(device)
         return DataLoader(list(zip(X, y)), batch_size=128, shuffle=shuffle,

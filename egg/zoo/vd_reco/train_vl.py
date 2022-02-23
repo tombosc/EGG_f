@@ -19,7 +19,6 @@ from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs_protoroles import Hyperparameters, load_game
 from .data_proto import Data as DataProto, init_data as init_data_proto
-from egg.zoo.language_bottleneck.intervention import CallbackEvaluator
 from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis, InteractionSaver
 from simple_parsing import ArgumentParser
 
@@ -192,8 +191,6 @@ def main(params):
         optimizer = torch.optim.SGD(params, lr=opts.lr,
                 momentum=opts.momentum)
 
-    #  intervention = CallbackEvaluator(test_loader, device=device, is_gs=opts.mode == 'gs', loss=loss, var_length=opts.variable_length,
-    #                                   input_intervention=True)
     def bin_by(sender_input_to_send):
         return (sender_input_to_send[1:].sum().item() + 0.5 *
                 sender_input_to_send[0].item())
@@ -224,7 +221,7 @@ def main(params):
     if opts.patience > 0:
         best_score_json_path = os.path.join(opts.checkpoint_dir, 'best_scores.json')
         early_stop = EarlyStopperNoImprovement(opts.patience,
-                best_score_json_path, 'loss')
+                best_score_json_path, True)
         callbacks.append(early_stop)
 
     if opts.optimizer == 'sgd':
