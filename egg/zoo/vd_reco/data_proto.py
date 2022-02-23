@@ -8,6 +8,7 @@ import itertools
 from torch._utils import _accumulate
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
+from .callbacks import entropy_list
 
 
 VerbTokenArg = namedtuple('VerbTokenArg',
@@ -17,6 +18,15 @@ VerbTokenArg = namedtuple('VerbTokenArg',
 VerbToken = namedtuple('VerbToken',
     ['split', 'sentence_id', 'pred_token', 'roleset',
     'gram_funcs', 'properties', 'classical_roles'])
+
+
+def counter_to_set_and_probas(c):
+    list_values_counts = list(c.items())
+    values, counts = list(zip(*list_values_counts))
+    counts = np.asarray(counts)
+    counts = counts / counts.sum()
+    return values, counts
+
 
 class Data(data.Dataset):
     """ Proto-roles.
@@ -137,6 +147,7 @@ class Data(data.Dataset):
         """
         self.n_thematic_roles = n_thematic_roles
         self.hide_to_send = hide_to_send
+        self.seed = seed
         rng = np.random.default_rng(seed)
         lines = []
         set_properties = set()
@@ -304,6 +315,61 @@ class Data(data.Dataset):
     def __getitem__(self, i):
         return self.examples[i] + (i,)
 
+    def generate_chimeras(self):
+        """ Re-sample a similar dataset where object-object cooccurences and 
+        role-object cooccurences are sampled from product of marginals.
+        Ignore valid/test set splits: this is only for test purposes
+        """
+        N = len(self.examples)
+        #  thematic_roles_counts = Counter()
+        new_examples = []
+        relations_counts = Counter()
+        entity_counts = Counter()
+        rng = np.random.default_rng(self.seed)
+        for speaker_in, _, _ in self.examples:
+            id_roleset, properties, thematic_roles, to_send = speaker_in
+            id_roleset -= 1
+            #  thematic_roles_counts[tuple(to_send.tolist())] += 1
+            relations_counts[id_roleset] += 1
+            for entity_vec, role in zip(properties, thematic_roles):
+                if role > 0:
+                    entity_counts[tuple(entity_vec.tolist())] += 1
+        rel_val, rel_prob = counter_to_set_and_probas(relations_counts) 
+        new_relations = rng.choice(rel_val, p=rel_prob, size=N)
+        #  role_val, role_prob = counter_to_set_and_probas(thematic_roles_counts)
+        #  role_map = {i: v for i, v in enumerate(role_val)}
+        #  new_roles = rng.choice(len(role_val), p=role_prob, size=N)
+        entities, entity_probs = counter_to_set_and_probas(entity_counts)
+        entities_map = {i: np.asarray(v) for i, v in enumerate(entities)}
+        new_examples = []
+        for i, example in enumerate(self.examples):
+            speaker_in, labels, listener_in = example
+            gram_funcs = labels[2]
+            roles = labels[4]
+            #  new_th_roles = role_map[new_roles[i]]
+            full_prop = speaker_in[1].copy()
+            partial_prop = listener_in[1].copy()
+            #  print("full", full_prop)
+            #  print("partial", partial_prop)
+            for k, role in enumerate(labels[4][1:]):
+                if role < 0:
+                    continue
+                j = rng.choice(len(entities), p=entity_probs)
+                new_entity = entities_map[j]
+                full_prop[k,:] = new_entity
+                to_send_k = speaker_in[3][k+1]
+                if to_send_k == 0:
+                    partial_prop[k,:] = new_entity
+            #  print("full", full_prop)
+            #  print("partial", partial_prop)
+            speaker_in = (new_relations[i] + 1, full_prop, *speaker_in[2:])
+            listener_in = (new_relations[i] + 1, partial_prop, *listener_in[2:])
+            labels = (new_relations[i], full_prop, *labels[2:])
+            new_examples.append((speaker_in, labels, listener_in))
+            if i == 0:
+                print(new_examples[0])
+        self.examples = new_examples
+
     def count_arguments(self, loader):
         args = Counter()
         for e in loader:
@@ -407,9 +473,40 @@ def init_data(data_cfg, run_random_seed, batch_size):
     test_loader = data.DataLoader(test_data, batch_size=batch_size)
     return all_data, train_loader, valid_loader, test_loader
 
+def dataset_to_chimeras(dataset, batch_size):
+    """ Careful! Modify the dataset IN PLACE.
+    """
+    dataset.generate_chimeras()
+    dummy_indices = range(0,1)
+    main_data_indices = range(1, len(dataset))
+    data_loader = data.DataLoader(
+        data.Subset(dataset, main_data_indices),
+        batch_size=batch_size,
+        shuffle=False, 
+    )
+    dummy_loader = data.DataLoader(
+        data.Subset(dataset, dummy_indices),
+        batch_size=batch_size,
+        shuffle=False,
+    )
+    return data_loader, dummy_loader
+
+
 if __name__ == '__main__':
+    # here are a bunch of unrelated things to check on the dataset
     data_cfg = Data.Settings.load('res_proto_1B_adam/c62c94b2c6149580d5a354d984a3287a_I/data.json')
     data, trainDL, validDL, testDL = init_data(data_cfg, 0, 1);
+    # first, compute the entropy of the roles on D_1 (the subset of the dataset
+    # where there is a single hidden entity):
+    count_roles_D1 = Counter()
+    for sender_input, _, _, _ in data:
+        mask = sender_input[3]
+        if mask.sum().item() != 1:
+            continue
+        count_roles_D1[mask.argmax()] += 1
+    entropy_roles_D1 = entropy_list(count_roles_D1.values())
+    print("Entropy of roles on D_1:", entropy_roles_D1)
+
     # when we want to filter on entity 8, we mean the 8+1th most frequent
     # entity in the train set. This matches how the qualitative analysis
     # script analysis.py numbers unique entities.
