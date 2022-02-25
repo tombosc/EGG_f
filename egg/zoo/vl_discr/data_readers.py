@@ -347,7 +347,7 @@ class SimpleData(Dataset):
         )
         #  padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
         #  padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
-        return (p_sender_i,
+        return ((p_sender_i, nec_features),
             (K, N, i_target, nec_features),
             p_receiver_i,
         )

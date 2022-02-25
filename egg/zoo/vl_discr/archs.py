@@ -98,19 +98,32 @@ class Embedder(nn.Module):
     """
     def __init__(self, dim_emb, n_properties, n_values, n_max_distractors):
         super(Embedder, self).__init__()
-        self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
-        self.transform = nn.Sequential(
-            nn.Linear(n_properties * dim_emb, dim_emb),
-            nn.ReLU(),
-            nn.LayerNorm(dim_emb),
-            )
+        self.value_embedding = nn.Embedding(1 + n_values * n_properties, dim_emb)
+        #  self.transform = nn.Sequential(
+        #      nn.Linear(n_properties * dim_emb, dim_emb),
+        #      nn.ReLU(),
+        #      nn.LayerNorm(dim_emb),
+        #  )
         self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+        self.n_properties = n_properties
+        self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
+                n_values, requires_grad=False)
 
-    def forward(self, x):
+
+    def forward(self, x, mask_features=None):
         bs, n_th_roles, n_attr = x.size()
-        obj_emb = self.value_embedding(x)
-        reshaped = obj_emb.view(bs, n_th_roles, -1)
-        obj_emb = self.transform(reshaped)
+        obj_emb = self.value_embedding(x + self.idx_offset)
+        if mask_features is not None:
+            one_H = F.one_hot(mask_features + 1,
+                    num_classes=self.n_properties+1)
+            one_H = ~(one_H.sum(1)[:, 1:].unsqueeze(1).unsqueeze(3).bool())  # bs, 1, n_prop, 1
+            obj_emb = obj_emb.masked_fill(one_H, 0)
+            obj_emb = obj_emb.sum(2) / one_H.sum(2)
+            # vector of size n_properties with 1 indicates feature is to be sent
+        else:
+            obj_emb = obj_emb.sum(2) / self.n_properties
+        #  reshaped = obj_emb.view(bs, n_th_roles, -1)
+        #  obj_emb = self.transform(reshaped)
         padding = (x.sum(2) == 0).unsqueeze(2)
         # this overrides the previous transformations/embeddings of NA values.
         obj_emb = obj_emb.masked_fill(padding, 0)
@@ -139,9 +152,12 @@ class Sender(nn.Module):
         self.predict_n_necessary = nn.Sequential(
             nn.Linear(dim_emb*2, 5),
         )
+        self.feature_pos_embedding = nn.Embedding(1+n_properties, dim_emb)
 
-    def forward(self, x):
-        x, mask = self.embedder(x)
+    def forward(self, x_and_features):
+        x, features = x_and_features
+        #  z = self.feature_pos_embedding(features+1).mean(1).unsqueeze(1)
+        x, mask = self.embedder(x, mask_features=features)
         x[:, 0, :] += self.mark_target
         # debugging: return only the first object without transformation
         #  dbg_mask = torch.zeros((x.size(0), 1)).bool().to(x.device)
@@ -149,7 +165,7 @@ class Sender(nn.Module):
         y = self.encoder(x.transpose(0, 1),
                 mask=self.mask_bias.to(x.device), src_key_padding_mask=mask)
         pred_n = self.predict_n_necessary(
-            torch.cat((y.max(0)[0], y.mean(0)), axis=1)
+            torch.cat((y.max(0)[0], y.mean(0)), axis=1).detach()
         )
         return y, mask, pred_n
 
@@ -629,14 +645,14 @@ class SenderReceiverTransformerGS(nn.Module):
     def compute_loss(self, sender_input, labels, receiver_input,
             receiver_outputs, message, pred_n, one_hot_message):
         loss_objs, aux = self.loss_objs(
-            sender_input,
+            sender_input[0],
             message,
             receiver_input,
             receiver_outputs,
             labels,
         )
         # cross-entropy predict n_necessary
-        #  pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
+        pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
         def necessary_to_one_hot(feat):
             A = torch.zeros((feat.size(0), 5))
             for i, (f1, f2) in enumerate(feat):
@@ -647,7 +663,6 @@ class SenderReceiverTransformerGS(nn.Module):
             return A
 
         one_hot_necessary = necessary_to_one_hot(labels[3]).to(pred_n.device)
-        #  import pdb; pdb.set_trace()
         pred_n_CE = F.binary_cross_entropy_with_logits(pred_n, one_hot_necessary, reduction='none')
         wlc = weighted_length_cost(
             loss_objs, 
@@ -657,9 +672,9 @@ class SenderReceiverTransformerGS(nn.Module):
             self.free_symbols
         )
         loss = (
-            #  loss_objs +
-            #  wlc +
-            pred_n_CE 
+            loss_objs +
+            wlc +
+            0.03 * pred_n_CE.sum(1)
         )
         out = {
            'sum': loss, 
@@ -689,7 +704,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["weighted_length_cost"] = loss['w_length_cost']
         aux["pred_n_CE"] = loss['pred_n_CE']
         aux["acc"] = loss['acc']
-        aux["sender_input_to_send"] = sender_input.float()
+        aux["sender_input_to_send"] = sender_input[0].float()
         aux["n_necessary_features"] = labels[0].float()
         aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
@@ -700,7 +715,7 @@ class SenderReceiverTransformerGS(nn.Module):
         )
         # TODO log the rest of recv in and out
         interaction = logging_strategy.filtered_interaction(
-            sender_input=sender_input,
+            sender_input=sender_input[0],
             receiver_input=receiver_input.detach(),
             labels=labels,
             receiver_output=receiver_outputs.detach(),
