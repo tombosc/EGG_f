@@ -102,14 +102,12 @@ def main(params):
         optimizer = torch.optim.SGD(params, lr=opts.lr,
                 momentum=opts.momentum)
 
-    #  def bin_by(sender_input_to_send):
-    #      return (sender_input_to_send[1:].sum().item() + 0.5 *
-    #              sender_input_to_send[0].item())
+    def bin_by(n_necessary_features):
+        return n_necessary_features.int().item()
 
-
-    #  entropy_calculator = ComputeEntropy(
-    #      valid_loader, device=device, is_gs=opts.hp.mode == 'gs',
-    #      var_length=True, bin_by=bin_by, var_message_length=True)
+    entropy_calculator = ComputeEntropy(
+        valid_loader, device=device, is_gs=opts.hp.mode == 'gs',
+        var_length=True, bin_by=bin_by, var_message_length=True)
     log_norms = LogNorms(game)
     post_train_analysis = PostTrainAnalysis(game)
     freq_save = [opts.n_epochs]
@@ -127,8 +125,8 @@ def main(params):
     opts.hp.save(hp_json_path)
     #  with open(dataset_json_path, 'w') as f:
     #      f.write(opts.data.dumps_json())
-    #  callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
-    callbacks = [interaction_saver]#, log_norms, post_train_analysis]
+    callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
+    #  callbacks = [interaction_saver]#, log_norms, post_train_analysis]
     if opts.patience > 0:
         best_score_json_path = os.path.join(opts.checkpoint_dir, 'best_scores.json')
         early_stop = EarlyStopperNoImprovement(opts.patience,

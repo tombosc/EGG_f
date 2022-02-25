@@ -53,7 +53,7 @@ class ComputeEntropy(core.Callback):
         binned_lengths = defaultdict(list)
         for i in range(interactions.size):
             msg = interactions.message[i] 
-            bin_ = self.bin_by(interactions.aux['sender_input_to_send'][i])
+            bin_ = self.bin_by(interactions.aux['n_necessary_features'][i])
             binned_messages[bin_].append(msg)
             if self.var_message_length:
                 L = interactions.message_length[i]
