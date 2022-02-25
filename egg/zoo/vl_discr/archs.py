@@ -137,7 +137,7 @@ class Sender(nn.Module):
         mask_bias[:, 0] += initial_target_bias
         self.mask_bias = nn.Parameter(mask_bias)
         self.predict_n_necessary = nn.Sequential(
-            nn.Linear(dim_emb*2, 2),
+            nn.Linear(dim_emb*2, 5),
         )
 
     def forward(self, x):
@@ -636,7 +636,19 @@ class SenderReceiverTransformerGS(nn.Module):
             labels,
         )
         # cross-entropy predict n_necessary
-        pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
+        #  pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
+        def necessary_to_one_hot(feat):
+            A = torch.zeros((feat.size(0), 5))
+            for i, (f1, f2) in enumerate(feat):
+                if f1 >= 0:
+                    A[i, f1] = 1
+                if f2 >= 0:
+                    A[i, f2] = 1
+            return A
+
+        one_hot_necessary = necessary_to_one_hot(labels[3]).to(pred_n.device)
+        #  import pdb; pdb.set_trace()
+        pred_n_CE = F.binary_cross_entropy_with_logits(pred_n, one_hot_necessary, reduction='none')
         wlc = weighted_length_cost(
             loss_objs, 
             message,
