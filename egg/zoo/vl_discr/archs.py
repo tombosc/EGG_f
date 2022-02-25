@@ -136,6 +136,9 @@ class Sender(nn.Module):
         mask_bias = torch.zeros(size=(K,K)).float()
         mask_bias[:, 0] += initial_target_bias
         self.mask_bias = nn.Parameter(mask_bias)
+        self.predict_n_necessary = nn.Sequential(
+            nn.Linear(dim_emb*2, 2),
+        )
 
     def forward(self, x):
         x, mask = self.embedder(x)
@@ -145,7 +148,10 @@ class Sender(nn.Module):
         #  return x[:, 0, :].unsqueeze(0), dbg_mask
         y = self.encoder(x.transpose(0, 1),
                 mask=self.mask_bias.to(x.device), src_key_padding_mask=mask)
-        return y, mask
+        pred_n = self.predict_n_necessary(
+            torch.cat((y.max(0)[0], y.mean(0)), axis=1)
+        )
+        return y, mask, pred_n
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
@@ -524,7 +530,7 @@ class TransformerSenderGS(nn.Module):
         return sequence, logits, entropy
 
     def forward(self, x):
-        encoder_state, encoder_state_mask = self.agent(x)
+        encoder_state, encoder_state_mask, pred_n = self.agent(x)
 
         if self.generate_style == "standard":
             sequence, distribs = self.generate_standard(encoder_state,
@@ -546,7 +552,7 @@ class TransformerSenderGS(nn.Module):
         #  logits = torch.cat([logits, zeros], dim=1)
         #  entropy = torch.cat([entropy, zeros], dim=1)
 
-        return sequence, distribs
+        return sequence, distribs, pred_n
 
 class SenderReceiverTransformerGS(nn.Module):
     """ Straight-through ONLY adapter!
@@ -621,15 +627,16 @@ class SenderReceiverTransformerGS(nn.Module):
         return losses, losses['sum'], losses['sum'] - losses['length']
 
     def compute_loss(self, sender_input, labels, receiver_input,
-            receiver_outputs, message, one_hot_message):
-        loss_objs = self.loss_objs(
+            receiver_outputs, message, pred_n, one_hot_message):
+        loss_objs, aux = self.loss_objs(
             sender_input,
             message,
             receiver_input,
             receiver_outputs,
             labels,
         )
-
+        # cross-entropy predict n_necessary
+        pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
         wlc = weighted_length_cost(
             loss_objs, 
             message,
@@ -638,18 +645,21 @@ class SenderReceiverTransformerGS(nn.Module):
             self.free_symbols
         )
         loss = (
-            loss_objs +
-            wlc
+            #  loss_objs +
+            #  wlc +
+            pred_n_CE 
         )
         out = {
            'sum': loss, 
            'objs': loss_objs,
            'w_length_cost': wlc,
+           'pred_n_CE': pred_n_CE,
         }
+        out.update(aux)
         return out
 
     def forward(self, sender_input, labels, receiver_input):
-        message, distribs = self.sender(sender_input)
+        message, distribs, pred_n = self.sender(sender_input)
         # turn all tokens after the 1st eos has been emitted to eos
         L = find_lengths(message, one_hot_encoded=True)
         bs, max_len, _ = message.size()
@@ -660,12 +670,15 @@ class SenderReceiverTransformerGS(nn.Module):
 
         receiver_outputs = self.receiver(message, receiver_input)
         loss = self.compute_loss(sender_input, labels, receiver_input,
-            receiver_outputs, message, one_hot_message=True)
+            receiver_outputs, message, pred_n, one_hot_message=True)
         aux = {}
         aux["length"] = L.float()
         aux["loss_objs"] = loss['objs']
         aux["weighted_length_cost"] = loss['w_length_cost']
+        aux["pred_n_CE"] = loss['pred_n_CE']
+        aux["acc"] = loss['acc']
         aux["sender_input_to_send"] = sender_input.float()
+        aux["n_necessary_features"] = labels[0].float()
         aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
         aux['loss'] = loss['sum']

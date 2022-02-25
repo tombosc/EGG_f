@@ -6,12 +6,14 @@
 import torch
 from torch.utils.data import Dataset
 import numpy as np
+from collections import Counter
 from torch.nn.utils.rnn import pad_sequence
 from dataclasses import dataclass
 from simple_parsing.helpers import Serializable
 from torch.utils.data import DataLoader
 from itertools import chain, combinations, product
 import scipy.stats
+import unittest
 #  from .utils import set_torch_seed
 
 
@@ -235,6 +237,132 @@ def sample_from_conditionals(rng, conditionals, x_1):
         out[i+1] = x
     return out
 
+def range_except(N, E, start):
+    r = range(start, N+start)
+    r = [e for e in r if e not in E]
+    assert(len(r) == N-len(E))
+    return r
+
+class SimpleData(Dataset):
+    @dataclass
+    class Settings(Serializable):
+        seed: int = 0
+        n_examples: int = 1000
+        max_value: int = 5
+        n_features: int = 5
+        max_distractors: int = 4  # don't change, hardcoded
+    
+    def __init__(self, config):
+        c = config
+        self.data = []
+        rng = np.random.default_rng(c.seed)
+        self.n_features = c.n_features
+        self.max_value = c.max_value
+        # N_distractors: N
+        # N_properties needed to distinguish = K
+        # p(N) is computed so that P(K) = Σ P(K|N) P(N) is uniform
+        n_max_distractors = c.max_distractors
+        n_distractors = rng.choice(n_max_distractors, p=[1/12, 1/6, 1/4, 1/2], size=c.n_examples) + 1
+        zero = np.zeros(c.n_features, dtype=int)
+        dict_K = {  # maps (N+1, i) to how many features are needed
+            (2, 0): 1, (2, 1): 1,
+            (3, 0): 1, (3, 1): 2, (3, 2): 1,
+            (4, 0): 1, (4, 1): 2, (4, 2): 2, (4,3): 1,
+            (5, 0): 1, (5, 1): 2, (5, 2): 2, (5,3): 2, (5,4): 1,
+        }
+        for N in n_distractors:
+            # sample an object uniformly
+            x_1 = rng.choice(c.max_value, size=c.n_features) + 1
+            prev = x_1
+            # to sample distractors, simply modify a random feature 
+            distractors = []
+            modified_features = []
+            for e in range(N):
+                distractor = prev.copy()
+                possible_features = range_except(c.n_features,
+                        modified_features, start=0)
+                i_feat = rng.choice(possible_features)
+                modified_features.append(i_feat)
+                #  print(f"Sel feature = {i_feat} with val {prev[i_feat]}")
+                possible_values = range_except(c.max_value, [prev[i_feat]],
+                        start=1)
+                distractor[i_feat] = rng.choice(possible_values)
+                #  print(f"Chosen val = {distractor[i_feat]}")
+                distractors.append(distractor)
+                prev = distractor
+            objects = [x_1] + distractors
+            # add padding
+            objects += [zero,]*(n_max_distractors - N)
+            objects = np.asarray(objects)
+            #  print(objects)
+            # select target randomly
+            i_target = rng.choice(N+1)
+            K = dict_K[(N+1, i_target)]
+            #  target = objects[i_target]
+            #  A = (target != objects[:N+1]).sum(0)
+            #  import pdb; pdb.set_trace()
+            sender_input = np.vstack((
+                objects[i_target][np.newaxis, :], 
+                objects[:i_target],
+                objects[i_target+1:]
+            ))
+            assert(np.allclose(sender_input[0], objects[i_target]))
+            K2, necessary_features = get_necessary_features(torch.tensor(sender_input).unsqueeze(0))
+            # verify that the computation of necessary feature yields at least
+            # the same number of necessary features as was planned
+            assert(K == K2.item())
+            labels = (
+                np.asarray([K]), np.asarray([N]),
+                np.asarray([i_target]),
+                necessary_features[0], objects,
+            )
+            receiver_input = objects
+            self.data.append((
+                sender_input,
+                labels,
+                receiver_input,
+            ))
+            #  print(self.data[-1])
+
+    def __len__(self):
+        return len(self.data)
+
+    def __getitem__(self, i):
+        return self.data[i]
+
+    @staticmethod
+    def collater(list_tensors):
+        sender_inputs = [e[0] for e in list_tensors]
+        #  labels = torch.cat([e[1] for e in list_tensors])
+        receiver_inputs = [e[2] for e in list_tensors]
+        p_sender_i = torch.tensor(sender_inputs)
+        p_receiver_i = torch.tensor(receiver_inputs)
+        K = torch.tensor([e[1][0] for e in list_tensors]).squeeze()
+        N = torch.tensor([e[1][1] for e in list_tensors]).squeeze()
+        i_target = torch.tensor([e[1][2] for e in list_tensors]).squeeze()
+        nec_features = pad_sequence(
+            [torch.tensor(e[1][3]) for e in list_tensors],
+            batch_first=True, 
+            padding_value=-1,
+        )
+        #  padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
+        #  padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
+        return (p_sender_i,
+            (K, N, i_target, nec_features),
+            p_receiver_i,
+        )
+
+class TesterLoss(unittest.TestCase):
+    def test_simple_data(self):
+        c = SimpleData.Config(n_examples=4000, max_value=10, n_features=5)
+        data = SimpleData(c)
+        count_K = Counter()
+        for K, N, target, mod_features, x in data.data:
+            count_K[K] += 1
+        print(count_K)
+
+        import pdb; pdb.set_trace()
+
 class DependentData(Dataset):
     @dataclass
     class Settings(Serializable):
@@ -368,27 +496,21 @@ def loaders_from_dataset(dataset, config_data, train_bs, valid_bs):
     train_size = int(N * (3/5))
     val_size = int(N * (1/5))
     test_size = N - train_size - val_size
-    n_combinations = dataset.n_combinations()
-    # TODO: I don't really like the fact that some n_combinations can be really
-    # small. There can still be many datapoints, though, because a datapoint is
-    # defifned by a combination of a target and distractors. But still, maybe
-    # we should use non-overlapping sets of targets in train, valid and test?
-    print("#combinations={}".format(n_combinations))
     train_ds, val_ds, test_ds = torch.utils.data.random_split(
         dataset,
         [train_size, val_size, test_size],
         generator=torch.Generator().manual_seed(config_data.seed),
     )
     train_loader = DataLoader(train_ds, batch_size=train_bs,
-            shuffle=True, num_workers=1, collate_fn=Data.collater,
+            shuffle=True, num_workers=1, collate_fn=dataset.collater,
             drop_last=True,
     )
     val_loader = DataLoader(val_ds, batch_size=valid_bs,
-            shuffle=False, num_workers=1, collate_fn=Data.collater,
+            shuffle=False, num_workers=1, collate_fn=dataset.collater,
             drop_last=True,
     )
     test_loader = DataLoader(test_ds, batch_size=valid_bs,
-            shuffle=False, num_workers=1, collate_fn=Data.collater,
+            shuffle=False, num_workers=1, collate_fn=dataset.collater,
             drop_last=True,
     )
     return train_loader, val_loader, test_loader
@@ -401,6 +523,11 @@ def init_dependent_data(data_cfg, random_seed, batch_size,
     return all_data, train_loader, valid_loader, test_loader
 
 
+def init_simple_data(data_cfg, random_seed, batch_size, validation_batch_size):
+    all_data = SimpleData(data_cfg)
+    train_loader, valid_loader, test_loader = loaders_from_dataset(
+        all_data, data_cfg, batch_size, validation_batch_size)
+    return all_data, train_loader, valid_loader, test_loader
 
 def get_necessary_features(sender_input):
     """ Number of features necessary to distinguish the target (first row
@@ -444,3 +571,4 @@ def dataset_fingerprint(dataset):
     s = "".join([str(e.item()) for e in first_input.sum(1)])
     s += "".join([str(e.item()) for e in first_input.sum(0)])
     return s
+

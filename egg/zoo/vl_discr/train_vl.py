@@ -18,19 +18,20 @@ from egg.core.smorms3 import SMORMS3
 from egg.core import EarlyStopperNoImprovement
 from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs import Hyperparameters, load_game
-from .data_readers import DependentData as Data, init_dependent_data as init_data
+#  from .data_readers import DependentData as Data, init_dependent_data as init_data
+from .data_readers import SimpleData as Data, init_simple_data as init_data
 from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis, InteractionSaver
 from simple_parsing import ArgumentParser
 
 def get_params(params):
     parser = ArgumentParser()
-    parser.add_argument('--dataset', type=str, default='dependent',
-                        help="Right now, only 'dependent' is supported")
+    parser.add_argument('--dataset', type=str, default='simple',
+                        help="Right now, only 'simple' is supported")
     dataset_args, unknown_args = parser.parse_known_args(params)
     dataset = dataset_args.dataset
     params = unknown_args
     parser = ArgumentParser()
-    if dataset == 'dependent':
+    if dataset == 'simple':
         parser.add_arguments(Data.Settings, dest="data")
     else:
         raise ValueError('Unknown dataset')
@@ -63,11 +64,13 @@ def entropy(probs):
 
 def loss(_sender_input, _message, receiver_input,
         receiver_output, labels):
-    CE = F.cross_entropy(receiver_output, labels, reduction='none')
-    bs = labels.size(0)
+    K, N, i_target, necessary = labels
+    CE = F.cross_entropy(receiver_output, i_target, reduction='none')
+    bs = i_target.size(0)
     assert(torch.allclose(_sender_input[:, 0], 
-                          receiver_input[torch.arange(bs),labels]))
-    return CE
+                          receiver_input[torch.arange(bs),i_target]))
+    acc = (receiver_output.argmax(1) == i_target).float()
+    return CE, {'acc': acc}
 
 
 def main(params):

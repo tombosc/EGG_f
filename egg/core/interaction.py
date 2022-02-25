@@ -141,7 +141,7 @@ class Interaction:
         return Interaction(
             sender_input=_check_cat([x.sender_input for x in interactions]),
             receiver_input=_check_cat([x.receiver_input for x in interactions]),
-            labels=_check_cat([x.labels for x in interactions]),
+            labels=None,#_check_cat([x.labels for x in interactions]),
             message=_check_cat([x.message for x in interactions]),
             message_length=_check_cat([x.message_length for x in interactions]),
             receiver_output=_check_cat([x.receiver_output for x in interactions]),
