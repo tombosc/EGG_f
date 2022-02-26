@@ -1,7 +1,7 @@
 import egg.core as core
 from egg.zoo.language_bottleneck.intervention import _hashable_tensor
 import numpy as np
-from collections import defaultdict
+from collections import defaultdict, Counter
 from random import shuffle
 import torch
 from egg.core.callbacks import InteractionSaver as InteractionSaverBase
@@ -65,6 +65,10 @@ class ComputeEntropy(core.Callback):
             if self.var_message_length:
                 mean_L = torch.stack(binned_lengths[bin_]).mean().unsqueeze(0)
                 stats["length_" + str(bin_)] = mean_L
+            if not game.training:
+                print("Bin=", bin_)
+                hashable_msgs = [_hashable_tensor(m) for m in msgs]
+                print("Messages:", Counter(hashable_msgs))
         return stats
         #  return dict(
         #      codewords_entropy=entropy_messages,

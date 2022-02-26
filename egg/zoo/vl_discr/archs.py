@@ -92,6 +92,38 @@ def exponential_distance_vector(n, k):
     return - u + 1
 
 
+class ObjectAttEmbedder(nn.Module):
+    """ Turn a discrete 2D matrix encoding feature of objects into a continuous
+    2D matrix
+    """
+    def __init__(self, dim_emb, n_properties, n_values, n_max_distractors):
+        super(ObjectAttEmbedder, self).__init__()
+        self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
+        self.transform = nn.Sequential(
+            nn.Linear(n_properties * dim_emb, dim_emb),
+            nn.ReLU(),
+            nn.LayerNorm(dim_emb),
+        )
+        self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, dim_emb)))
+        self.n_properties = n_properties
+        self.dim_emb = dim_emb
+        self.n_max_distractors = n_max_distractors
+        self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+
+
+    def forward(self, x, mask_features=None):
+        bs = x.size(0)
+        obj_emb = self.value_embedding(x)  # bs, n_obj, n_properties, dim_emb
+        reshaped = obj_emb.view(bs, self.n_max_distractors + 1, -1)
+        obj_emb = self.transform(reshaped)
+        # and a object specific embedding
+        obj_emb = obj_emb + self.mark_objects  
+        # set padding objects to 0
+        padding = (x.sum(2) == 0).unsqueeze(2)
+        obj_emb = obj_emb.masked_fill(padding, 0)
+        obj_emb += padding * self.mark_absent
+        return obj_emb, padding.squeeze(2)
+
 class Embedder(nn.Module):
     """ Turn a discrete 2D matrix encoding feature of objects into a continuous
     2D matrix
@@ -104,37 +136,54 @@ class Embedder(nn.Module):
         #      nn.ReLU(),
         #      nn.LayerNorm(dim_emb),
         #  )
-        self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
-        self.n_properties = n_properties
+        self.mark_target_feature = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
         self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
                 n_values, requires_grad=False)
+        self.mark_features = nn.Parameter(torch.randn(size=(1, 1, n_properties, dim_emb)))
+        self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, 1, dim_emb)))
+        # this one is redundant because of mark_objects
+        #  self.mark_target = nn.Parameter(torch.randn(size=(1, 1, dim_emb,)))
+        self.n_properties = n_properties
+        self.dim_emb = dim_emb
+        self.n_max_distractors = n_max_distractors
+        self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, 1, dim_emb)))
 
 
     def forward(self, x, mask_features=None):
-        bs, n_th_roles, n_attr = x.size()
-        obj_emb = self.value_embedding(x + self.idx_offset)
+        bs = x.size(0)
+        obj_emb = self.value_embedding(x + self.idx_offset)  
+        # bs, n_obj, n_prop, emb_dim
         if mask_features is not None:
-            one_H = F.one_hot(mask_features + 1,
-                    num_classes=self.n_properties+1)
-            one_H = ~(one_H.sum(1)[:, 1:].unsqueeze(1).unsqueeze(3).bool())  # bs, 1, n_prop, 1
-            obj_emb = obj_emb.masked_fill(one_H, 0)
-            obj_emb = obj_emb.sum(2) / one_H.sum(2)
-            # vector of size n_properties with 1 indicates feature is to be sent
-        else:
-            obj_emb = obj_emb.sum(2) / self.n_properties
+            # SENDER ONLY
+            # convert mask_features to one_hot. Since -1: no feature,
+            # we have to add 1, then do 1: (next line)
+            one_H = F.one_hot(mask_features + 1,  
+                              num_classes=self.n_properties+1)
+            one_H = (one_H.sum(1)[:, 1:].unsqueeze(1).unsqueeze(3).bool())
+            # one_H is a boolean tensor of size: (bs, 1, n_prop, 1)
+            # it is True if prop in the batch is a necessary feature to convey
+            obj_emb = obj_emb + one_H * self.mark_target_feature
+        # and a object specific embedding
+        obj_emb = obj_emb + self.mark_objects  
+        # mark all objects with a property specific embedding
+        obj_emb = obj_emb + self.mark_features# this matters
         #  reshaped = obj_emb.view(bs, n_th_roles, -1)
         #  obj_emb = self.transform(reshaped)
-        padding = (x.sum(2) == 0).unsqueeze(2)
-        # this overrides the previous transformations/embeddings of NA values.
+        # set padding objects to 0
+        padding = (x.sum(2) == 0).unsqueeze(2).unsqueeze(3)
         obj_emb = obj_emb.masked_fill(padding, 0)
         obj_emb += padding * self.mark_absent
-        return obj_emb, padding.squeeze(2)
+
+        padding = padding.repeat((1, 1, self.n_properties, 1))
+        obj_emb = obj_emb.view((bs, -1, self.dim_emb))
+        padding = padding.view((bs, -1))
+        return obj_emb, padding
 
 class Sender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
             n_properties, n_values, n_max_distractors, 
             initial_target_bias, 
-            max_len,
+            max_len, 
             n_layers=3, n_head=8):
         super(Sender, self).__init__()
         self.max_len = max_len
@@ -142,28 +191,54 @@ class Sender(nn.Module):
         self.vocab_size = vocab_size
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
+        self.n_properties = n_properties
         self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
         # embedding for marking positions to send
-        self.mark_target = nn.Parameter(torch.randn(size=(dim_emb,)))
+        self.n_max_distractors = n_max_distractors
         K = n_max_distractors + 1
-        mask_bias = torch.zeros(size=(K,K)).float()
-        mask_bias[:, 0] += initial_target_bias
-        self.mask_bias = nn.Parameter(mask_bias)
+        # unused code: used to be a bias to incite attention on the target
+        # object
+        # in this version, though, the attention is not on a single object but
+        # on necessary features across all objects
+        #  mask_bias = torch.zeros(size=(K*n_properties,K*n_properties)).float()
+        #  mask_bias[:, 0:n_properties] += 0  #initial_target_bias
+        #  self.mask_bias = nn.Parameter(mask_bias)
         self.predict_n_necessary = nn.Sequential(
-            nn.Linear(dim_emb*2, 5),
+            nn.Linear(dim_emb*2, n_properties),
         )
-        self.feature_pos_embedding = nn.Embedding(1+n_properties, dim_emb)
+        self.bias_value = initial_target_bias
+        self.n_head = n_head
+        #  self.feature_pos_embedding = nn.Embedding(1+n_properties, dim_emb)
 
     def forward(self, x_and_features):
         x, features = x_and_features
         #  z = self.feature_pos_embedding(features+1).mean(1).unsqueeze(1)
         x, mask = self.embedder(x, mask_features=features)
-        x[:, 0, :] += self.mark_target
-        # debugging: return only the first object without transformation
-        #  dbg_mask = torch.zeros((x.size(0), 1)).bool().to(x.device)
-        #  return x[:, 0, :].unsqueeze(0), dbg_mask
-        y = self.encoder(x.transpose(0, 1),
-                mask=self.mask_bias.to(x.device), src_key_padding_mask=mask)
+        #  x[:, 0, :] += self.mark_target
+
+        # prepare bias over necessary features, as given by features
+        K = self.n_max_distractors + 1
+        nP = self.n_properties
+        bs = x.size(0)
+        mask_bias = torch.zeros(size=(bs, self.n_head, nP, K, K*nP)).float()
+        if self.bias_value != 0.0:
+            for i, (f1, f2) in enumerate(features.to('cpu')):
+                start = i * self.n_head
+                end = (i+1) * self.n_head
+                if f1 >= 0:
+                    mask_bias[start:end, :, f1] += self.bias_value
+                if f2 >= 0:
+                    mask_bias[start:end, :, f2] += self.bias_value
+            mask_bias = mask_bias.view((bs* self.n_head, nP*K, nP*K))
+            mask_bias = mask_bias.to(x.device)
+        else:
+            mask_bias = None
+
+        y = self.encoder(
+            x.transpose(0, 1),
+            mask=mask_bias,
+            src_key_padding_mask=mask,
+        )
         pred_n = self.predict_n_necessary(
             torch.cat((y.max(0)[0], y.mean(0)), axis=1).detach()
         )
@@ -181,6 +256,61 @@ class Receiver(nn.Module):
             batch_first=True)
         # them all in one matrix, we need to add offsets
         self.embedder = Embedder(dim_emb, n_properties, n_values, n_max_distractors)
+        activation = 'gelu'
+        self.tfm = nn.Transformer(
+            d_model=dim_emb,
+            nhead=n_head,
+            num_encoder_layers=n_layers,
+            num_decoder_layers=n_layers,
+            dim_feedforward=dim_ff,
+            dropout=dropout,
+            activation=activation,
+        )
+        #  self.out_log_prob = nn.Linear(dim_emb, 1)
+        self.out_log_prob = nn.Sequential(
+            nn.Linear(dim_emb * n_properties, dim_emb * 8),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_emb * 8, 1),
+        )
+        self.n_max_distractors = n_max_distractors
+        self.n_properties = n_properties
+        self.n_values = n_values
+
+
+    def forward(self, msg, x):
+        embed_msg = self.msg_embedding(msg)
+        embed_msg = self.pos_msg_embedding(embed_msg)
+        x, mask = self.embedder(x)
+        msg_padding = eos_mask(msg)
+        embed_msg = embed_msg.masked_fill(msg_padding.unsqueeze(2), 0.)
+        y = self.tfm(src=embed_msg.transpose(0, 1),
+                     tgt=x.transpose(0, 1),
+                     src_mask=None,
+                     src_key_padding_mask=msg_padding,
+                     memory_key_padding_mask=msg_padding,
+                     tgt_key_padding_mask=mask,
+        )  # bs, n_prop * n_value, emb_dim
+        bs = msg.size(0)
+        dim_emb = y.size(-1)
+        y = y.transpose(0, 1)  # bs, n_prop * (n_max_distr+1), dim_emb
+        y = y.reshape((bs, (self.n_max_distractors + 1), self.n_properties * dim_emb))
+        obj_pred = self.out_log_prob(y).squeeze()
+        return obj_pred
+
+
+class ObjectAttReceiver(nn.Module):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
+            n_properties, n_values, n_max_distractors,
+            max_len,
+            n_layers=3, n_head=8
+            ):
+        super(ObjectAttReceiver, self).__init__()
+        self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
+        self.pos_msg_embedding = FixedPositionalEmbeddings(dim_emb,
+            batch_first=True)
+        # them all in one matrix, we need to add offsets
+        self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
         activation = 'gelu'
         self.tfm = nn.Transformer(
             d_model=dim_emb,
@@ -209,9 +339,12 @@ class Receiver(nn.Module):
                      src_key_padding_mask=msg_padding,
                      memory_key_padding_mask=msg_padding,
                      tgt_key_padding_mask=mask,
-        )
+        )  # bs, n_prop * n_value, emb_dim
         bs = msg.size(0)
-        obj_pred = self.out_log_prob(y).transpose(0, 1).squeeze()
+        dim_emb = y.size(-1)
+        y = y.transpose(0, 1)  # bs, n_prop * (n_max_distr+1), dim_emb
+        y = y.view((bs, self.n_max_distractors + 1, -1))
+        obj_pred = self.out_log_prob(y).squeeze()
         return obj_pred
 
 
@@ -610,6 +743,7 @@ class SenderReceiverTransformerGS(nn.Module):
         """
         super(SenderReceiverTransformerGS, self).__init__()
         self.sender = sender
+        self.n_properties = receiver.n_properties
         self.receiver = receiver
         self.loss_objs = loss_objs
         self.length_cost = length_cost
@@ -654,7 +788,7 @@ class SenderReceiverTransformerGS(nn.Module):
         # cross-entropy predict n_necessary
         pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
         def necessary_to_one_hot(feat):
-            A = torch.zeros((feat.size(0), 5))
+            A = torch.zeros((feat.size(0), self.n_properties))
             for i, (f1, f2) in enumerate(feat):
                 if f1 >= 0:
                     A[i, f1] = 1

@@ -249,7 +249,7 @@ class SimpleData(Dataset):
         seed: int = 0
         n_examples: int = 1000
         max_value: int = 5
-        n_features: int = 5
+        n_features: int = 4
         max_distractors: int = 4  # don't change, hardcoded
     
     def __init__(self, config):
@@ -354,11 +354,12 @@ class SimpleData(Dataset):
 
 class TesterLoss(unittest.TestCase):
     def test_simple_data(self):
-        c = SimpleData.Config(n_examples=4000, max_value=10, n_features=5)
+        c = SimpleData.Settings(n_examples=4000, max_value=10)
         data = SimpleData(c)
         count_K = Counter()
-        for K, N, target, mod_features, x in data.data:
-            count_K[K] += 1
+        for sender_in, labels, recv_in in data.data:
+            K, N, target, mod_features, x = labels
+            count_K[K[0]] += 1
         print(count_K)
 
         import pdb; pdb.set_trace()
