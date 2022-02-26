@@ -162,7 +162,7 @@ class Embedder(nn.Module):
             one_H = (one_H.sum(1)[:, 1:].unsqueeze(1).unsqueeze(3).bool())
             # one_H is a boolean tensor of size: (bs, 1, n_prop, 1)
             # it is True if prop in the batch is a necessary feature to convey
-            obj_emb = obj_emb + one_H * self.mark_target_feature
+            #  obj_emb = obj_emb + one_H * self.mark_target_feature
         # and a object specific embedding
         obj_emb = obj_emb + self.mark_objects  
         # mark all objects with a property specific embedding
@@ -172,12 +172,75 @@ class Embedder(nn.Module):
         # set padding objects to 0
         padding = (x.sum(2) == 0).unsqueeze(2).unsqueeze(3)
         obj_emb = obj_emb.masked_fill(padding, 0)
-        obj_emb += padding * self.mark_absent
+        obj_emb = obj_emb + padding * self.mark_absent
 
         padding = padding.repeat((1, 1, self.n_properties, 1))
         obj_emb = obj_emb.view((bs, -1, self.dim_emb))
         padding = padding.view((bs, -1))
         return obj_emb, padding
+
+class ObjectAttSender(nn.Module):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
+            n_properties, n_values, n_max_distractors, 
+            initial_target_bias, 
+            max_len, 
+            n_layers=3, n_head=8):
+        super(ObjectAttSender, self).__init__()
+        self.max_len = max_len
+        self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
+        self.vocab_size = vocab_size
+        activation = 'gelu'
+        encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
+        self.n_properties = n_properties
+        self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
+        # embedding for marking positions to send
+        self.n_max_distractors = n_max_distractors
+        #  K = n_max_distractors + 1
+        # unused code: used to be a bias to incite attention on the target
+        # object
+        # in this version, though, the attention is not on a single object but
+        # on necessary features across all objects
+        #  mask_bias = torch.zeros(size=(K*n_properties,K*n_properties)).float()
+        #  mask_bias[:, 0:n_properties] += 0  #initial_target_bias
+        #  self.mask_bias = nn.Parameter(mask_bias)
+        #  self.gate = nn.Sequential(
+        #      nn.Linear(dim_emb, dim_emb),
+        #      nn.Sigmoid(),
+        #  )
+        self.predict_n_necessary = nn.Sequential(
+            nn.Linear(2*dim_emb, n_properties),
+        )
+        self.bias_value = initial_target_bias
+        self.n_head = n_head
+        #  self.feature_pos_embedding = nn.Embedding(1+n_properties, dim_emb)
+
+    def forward(self, x_and_features):
+        x, features = x_and_features
+        #  z = self.feature_pos_embedding(features+1).mean(1).unsqueeze(1)
+        x, mask = self.embedder(x, mask_features=features)
+        #  x[:, 0, :] += self.mark_target
+        # prepare bias over necessary features, as given by features
+        N = self.n_max_distractors + 1
+        nP = self.n_properties
+        bs = x.size(0)
+        d = x.size(-1)
+        mask_bias = None
+        if self.bias_value != 0.0:
+            raise NotImplementedError()
+
+        y = self.encoder(
+            x.transpose(0, 1),
+            mask=mask_bias,
+            src_key_padding_mask=mask,
+        ).squeeze()
+        y_T = y.transpose(0, 1).view(bs, N, d)  
+        pred_n = self.predict_n_necessary(
+            torch.cat((y_T.max(1)[0], y_T.mean(1)), axis=1).detach()
+        )
+        #  y = self.gate(y) * y
+        # variant: only attend over the first object when emitting message!
+        return y, mask, pred_n
+        #  return y, mask, pred_n
 
 class Sender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
@@ -204,7 +267,7 @@ class Sender(nn.Module):
         #  mask_bias[:, 0:n_properties] += 0  #initial_target_bias
         #  self.mask_bias = nn.Parameter(mask_bias)
         self.predict_n_necessary = nn.Sequential(
-            nn.Linear(dim_emb*2, n_properties),
+            nn.Linear(dim_emb*2, 1),
         )
         self.bias_value = initial_target_bias
         self.n_head = n_head
@@ -217,32 +280,33 @@ class Sender(nn.Module):
         #  x[:, 0, :] += self.mark_target
 
         # prepare bias over necessary features, as given by features
-        K = self.n_max_distractors + 1
+        N = self.n_max_distractors + 1
         nP = self.n_properties
         bs = x.size(0)
-        mask_bias = torch.zeros(size=(bs, self.n_head, nP, K, K*nP)).float()
+        d = x.size(-1)
+        mask_bias = None
         if self.bias_value != 0.0:
+            mask_bias = torch.zeros(size=(bs, self.n_head, nP, N, N*nP)).float()
             for i, (f1, f2) in enumerate(features.to('cpu')):
-                start = i * self.n_head
-                end = (i+1) * self.n_head
                 if f1 >= 0:
-                    mask_bias[start:end, :, f1] += self.bias_value
+                    mask_bias[i, :, f1] += self.bias_value
                 if f2 >= 0:
-                    mask_bias[start:end, :, f2] += self.bias_value
-            mask_bias = mask_bias.view((bs* self.n_head, nP*K, nP*K))
+                    mask_bias[i, :, f2] += self.bias_value
+            mask_bias = mask_bias.view((bs* self.n_head, nP*N, nP*N))
             mask_bias = mask_bias.to(x.device)
-        else:
-            mask_bias = None
 
         y = self.encoder(
             x.transpose(0, 1),
             mask=mask_bias,
             src_key_padding_mask=mask,
         )
+        y_T = y.transpose(0, 1).view(bs, N, nP, d)  
         pred_n = self.predict_n_necessary(
-            torch.cat((y.max(0)[0], y.mean(0)), axis=1).detach()
-        )
-        return y, mask, pred_n
+            torch.cat((y_T.max(1)[0], y_T.mean(1)), axis=2).detach()
+        ).squeeze()
+        # variant: only attend over the first object when emitting message!
+        return y[:self.n_properties], mask[:, :self.n_properties], pred_n
+        #  return y, mask, pred_n
 
 class Receiver(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
@@ -268,10 +332,11 @@ class Receiver(nn.Module):
         )
         #  self.out_log_prob = nn.Linear(dim_emb, 1)
         self.out_log_prob = nn.Sequential(
-            nn.Linear(dim_emb * n_properties, dim_emb * 8),
-            nn.ReLU(),
-            nn.Dropout(dropout),
-            nn.Linear(dim_emb * 8, 1),
+            nn.Linear(dim_emb * n_properties, 1),
+            #  nn.Linear(dim_emb * n_properties, dim_emb * 8),
+            #  nn.ReLU(),
+            #  nn.Dropout(dropout),
+            #  nn.Linear(dim_emb * 8, 1),
         )
         self.n_max_distractors = n_max_distractors
         self.n_properties = n_properties
@@ -786,7 +851,8 @@ class SenderReceiverTransformerGS(nn.Module):
             labels,
         )
         # cross-entropy predict n_necessary
-        pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
+        #  import pdb; pdb.set_trace()
+        #  pred_n_CE = F.cross_entropy(pred_n, labels[0]-1, reduction='none')
         def necessary_to_one_hot(feat):
             A = torch.zeros((feat.size(0), self.n_properties))
             for i, (f1, f2) in enumerate(feat):
@@ -795,7 +861,6 @@ class SenderReceiverTransformerGS(nn.Module):
                 if f2 >= 0:
                     A[i, f2] = 1
             return A
-
         one_hot_necessary = necessary_to_one_hot(labels[3]).to(pred_n.device)
         pred_n_CE = F.binary_cross_entropy_with_logits(pred_n, one_hot_necessary, reduction='none')
         wlc = weighted_length_cost(
@@ -925,7 +990,8 @@ def load_game(hp, loss, data_cfg):
         dropout=hp.dropout,
         causal=False,  # causal shouldn't matter, b/c only use the last token
     )
-    receiver = Receiver(
+    #  receiver = Receiver(
+    receiver = ObjectAttReceiver(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         n_properties=data_cfg.n_features,

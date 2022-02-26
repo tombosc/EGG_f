@@ -248,7 +248,7 @@ class SimpleData(Dataset):
     class Settings(Serializable):
         seed: int = 0
         n_examples: int = 1000
-        max_value: int = 5
+        max_value: int = 8
         n_features: int = 4
         max_distractors: int = 4  # don't change, hardcoded
     
