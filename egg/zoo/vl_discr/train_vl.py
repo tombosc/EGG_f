@@ -78,7 +78,7 @@ def main(params):
     print(opts)
 
     data, train_loader, valid_loader, _ = init_data(opts.data,
-            opts.random_seed, opts.batch_size, 128)
+            opts.random_seed, opts.batch_size, 256)
     device = opts.device
     torch.manual_seed(opts.random_seed)  # for model parameters
     if opts.hp.sender_cell == 'tfm' and opts.hp.mode == 'gs':
@@ -88,8 +88,6 @@ def main(params):
     print(game)
 
     params = list(game.parameters())
-    #  if opts.mode == 'rfn':
-    #      params += list(baseline_net.parameters())
 
     if opts.optimizer == 'adam':
         optimizer = torch.optim.Adam(params, lr=opts.lr,

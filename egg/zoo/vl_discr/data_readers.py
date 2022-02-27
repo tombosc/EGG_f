@@ -250,7 +250,7 @@ class SimpleData(Dataset):
         n_examples: int = 1000
         max_value: int = 8
         n_features: int = 4
-        max_distractors: int = 4  # don't change, hardcoded
+        max_distractors: int = 3  # don't change, hardcoded
     
     def __init__(self, config):
         c = config
@@ -262,7 +262,8 @@ class SimpleData(Dataset):
         # N_properties needed to distinguish = K
         # p(N) is computed so that P(K) = Σ P(K|N) P(N) is uniform
         n_max_distractors = c.max_distractors
-        n_distractors = rng.choice(n_max_distractors, p=[1/12, 1/6, 1/4, 1/2], size=c.n_examples) + 1
+        n_distractors = rng.choice(n_max_distractors, p=[1/2, 0, 1/2], size=c.n_examples) + 1
+        #  n_distractors = rng.choice(n_max_distractors, p=[1/12, 1/6, 1/4, 1/2], size=c.n_examples) + 1
         zero = np.zeros(c.n_features, dtype=int)
         dict_K = {  # maps (N+1, i) to how many features are needed
             (2, 0): 1, (2, 1): 1,
@@ -308,13 +309,18 @@ class SimpleData(Dataset):
             ))
             assert(np.allclose(sender_input[0], objects[i_target]))
             K2, necessary_features = get_necessary_features(torch.tensor(sender_input).unsqueeze(0))
+            necessary_features = necessary_features[0]  # since we don't pass a batch
+            if K2 == 1:
+                # padding
+                necessary_features = np.concatenate((necessary_features, np.asarray([-1])))
             # verify that the computation of necessary feature yields at least
             # the same number of necessary features as was planned
             assert(K == K2.item())
             labels = (
                 np.asarray([K]), np.asarray([N]),
                 np.asarray([i_target]),
-                necessary_features[0], objects,
+                necessary_features,
+                objects,
             )
             receiver_input = objects
             self.data.append((
@@ -340,11 +346,7 @@ class SimpleData(Dataset):
         K = torch.tensor([e[1][0] for e in list_tensors]).squeeze()
         N = torch.tensor([e[1][1] for e in list_tensors]).squeeze()
         i_target = torch.tensor([e[1][2] for e in list_tensors]).squeeze()
-        nec_features = pad_sequence(
-            [torch.tensor(e[1][3]) for e in list_tensors],
-            batch_first=True, 
-            padding_value=-1,
-        )
+        nec_features = torch.stack([torch.tensor(e[1][3]) for e in list_tensors]).squeeze()
         #  padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
         #  padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
         return ((p_sender_i, nec_features),
@@ -493,7 +495,7 @@ class DependentData(Dataset):
 
 
 def loaders_from_dataset(dataset, config_data, train_bs, valid_bs):
-    N = config_data.n_examples
+    N = len(dataset)
     train_size = int(N * (3/5))
     val_size = int(N * (1/5))
     test_size = N - train_size - val_size

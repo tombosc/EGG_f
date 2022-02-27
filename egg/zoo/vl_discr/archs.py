@@ -101,8 +101,8 @@ class ObjectAttEmbedder(nn.Module):
         self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
         self.transform = nn.Sequential(
             nn.Linear(n_properties * dim_emb, dim_emb),
-            nn.ReLU(),
-            nn.LayerNorm(dim_emb),
+            #  nn.ReLU(),
+            #  nn.LayerNorm(dim_emb),
         )
         self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, dim_emb)))
         self.n_properties = n_properties
@@ -179,6 +179,54 @@ class Embedder(nn.Module):
         padding = padding.view((bs, -1))
         return obj_emb, padding
 
+
+class SimpleSender(nn.Module):
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
+            n_properties, n_values, n_max_distractors, 
+            initial_target_bias, 
+            max_len, 
+            n_layers=3, n_head=8):
+        super(SimpleSender, self).__init__()
+        self.value_embedding = nn.Embedding(1 + n_values * n_properties, dim_emb)
+        self.transform = nn.Sequential(
+            nn.Linear(n_properties * dim_emb, dim_emb),
+            #  nn.ReLU(),
+            #  nn.LayerNorm(dim_emb),
+        )
+        self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
+                n_values, requires_grad=False)
+        self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties+1, dim_emb)))
+        self.dummy_feature = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+        self.n_properties = n_properties
+        self.dim_emb = dim_emb
+        self.n_max_distractors = n_max_distractors
+        self.predict_n_necessary = nn.Sequential(
+            #  nn.Linear(2*dim_emb, n_properties),  # when given ff
+            nn.Linear(dim_emb, n_properties),
+        )
+
+    def forward(self, x_and_features):
+        x, features = x_and_features
+        # first embed the values
+        bs = x.size(0)
+        x = x[:, 0]  # disregard objects that are not target
+        obj_emb = self.value_embedding(x + self.idx_offset)  
+        obj_repr = self.transform(obj_emb.view((bs, 1, -1)))
+        # # concatenate to all features a "fake" missing feature
+        # z = torch.cat((self.dummy_feature.repeat((bs, 1, 1)), obj_emb), axis=1)
+        # # mark all objects with a property specific embedding
+       # z = z + self.mark_features
+        # #  print("fe size", features.size())
+        # #  print("z size", z.size())
+        # features_target = features.unsqueeze(2).repeat((1, 1, self.dim_emb))
+        # #  print("fe_tg size", features_target.size())
+        # ff = torch.gather(z, 1, features_target + 1)
+        # obj_and_features = torch.cat((obj_repr, ff), 1)
+        #  pred_n = self.predict_n_necessary(ff.view((bs, -1)))
+        pred_n = self.predict_n_necessary(obj_repr.squeeze(1))
+        return obj_repr.transpose(1, 0), None, pred_n
+        #  return obj_and_features.transpose(1, 0), None, pred_n
+
 class ObjectAttSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
             n_properties, n_values, n_max_distractors, 
@@ -241,6 +289,7 @@ class ObjectAttSender(nn.Module):
         # variant: only attend over the first object when emitting message!
         return y, mask, pred_n
         #  return y, mask, pred_n
+
 
 class Sender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
@@ -332,8 +381,9 @@ class Receiver(nn.Module):
         )
         #  self.out_log_prob = nn.Linear(dim_emb, 1)
         self.out_log_prob = nn.Sequential(
-            nn.Linear(dim_emb * n_properties, 1),
-            #  nn.Linear(dim_emb * n_properties, dim_emb * 8),
+            #  nn.Linear(dim_emb * n_properties, 1),
+            #  nn.Linear(dim_emb * (n_max_distractors + 1) * n_properties, 1),
+            #  nn.Linear(dim_emb * (n_max_distractors + 1) * n_properties, dim_emb * 8),
             #  nn.ReLU(),
             #  nn.Dropout(dropout),
             #  nn.Linear(dim_emb * 8, 1),
@@ -359,7 +409,9 @@ class Receiver(nn.Module):
         bs = msg.size(0)
         dim_emb = y.size(-1)
         y = y.transpose(0, 1)  # bs, n_prop * (n_max_distr+1), dim_emb
-        y = y.reshape((bs, (self.n_max_distractors + 1), self.n_properties * dim_emb))
+        y = y.view((bs, -1))
+        raise NotImplementedError()
+        #  y = y.reshape((bs, (self.n_max_distractors + 1), self.n_properties * dim_emb))
         obj_pred = self.out_log_prob(y).squeeze()
         return obj_pred
 
@@ -386,7 +438,12 @@ class ObjectAttReceiver(nn.Module):
             dropout=dropout,
             activation=activation,
         )
-        self.out_log_prob = nn.Linear(dim_emb, 1)
+        self.out_log_prob = nn.Sequential(
+            nn.Linear(dim_emb * (n_max_distractors + 1), dim_emb * 8),
+            nn.ReLU(),
+            nn.Dropout(dropout),
+            nn.Linear(dim_emb * 8, (n_max_distractors + 1)),
+        )
         self.n_max_distractors = n_max_distractors
         self.n_properties = n_properties
         self.n_values = n_values
@@ -408,9 +465,58 @@ class ObjectAttReceiver(nn.Module):
         bs = msg.size(0)
         dim_emb = y.size(-1)
         y = y.transpose(0, 1)  # bs, n_prop * (n_max_distr+1), dim_emb
-        y = y.view((bs, self.n_max_distractors + 1, -1))
-        obj_pred = self.out_log_prob(y).squeeze()
+        #  y = y.view((bs, self.n_max_distractors + 1, -1))
+        y = y.reshape((bs, -1))
+        obj_pred = self.out_log_prob(y)
+        obj_pred = obj_pred.masked_fill(mask, float('-inf'))
         return obj_pred
+
+
+class DecontextualizedReceiver(nn.Module):
+    """ Computes an embedding based on a message, compares the embedding.
+    """
+    def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
+            n_properties, n_values, n_max_distractors,
+            max_len,
+            n_layers=3, n_head=8
+            ):
+        super(DecontextualizedReceiver, self).__init__()
+        self.msg_embedding = RelaxedEmbedding(vocab_size, dim_emb)
+        self.pos_msg_embedding = FixedPositionalEmbeddings(dim_emb,
+            batch_first=True)
+        # them all in one matrix, we need to add offsets
+        self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
+        activation = 'gelu'
+        encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
+        self.n_properties = n_properties
+        self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
+        self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
+        self.msg_to_repr = nn.Sequential(
+            nn.Linear(dim_emb, dim_emb),
+            #  nn.ReLU(),
+            #  nn.Dropout(),
+            #  nn.Linear(dim_emb * 4, dim_emb),
+        )
+
+
+    def forward(self, msg, x):
+        embed_msg = self.msg_embedding(msg)
+        embed_msg = self.pos_msg_embedding(embed_msg)
+        msg_padding = eos_mask(msg)
+        embed_msg = embed_msg.masked_fill(msg_padding.unsqueeze(2), 0.)
+        y = self.encoder(embed_msg.transpose(0, 1),
+                         src_key_padding_mask=msg_padding,
+        )  # L, bs, emb_dim
+        x, mask = self.embedder(x)
+        bs = msg.size(0)
+        dim_emb = y.size(-1)
+        #  y = y.view((bs, self.n_max_distractors + 1, -1))
+        eos_token_pos = (~msg_padding).int().sum(1) - 1
+        y_eos = y[eos_token_pos, torch.arange(bs).to(x.device)]
+        obj_pred = self.msg_to_repr(y_eos)
+        match = torch.bmm(x, obj_pred.unsqueeze(2)).squeeze() 
+        match = match.masked_fill(mask, float('-inf'))
+        return match
 
 
 class TransformerSenderGS(nn.Module):
@@ -970,7 +1076,8 @@ class TesterLoss(unittest.TestCase):
         
 
 def load_game(hp, loss, data_cfg):
-    sender = Sender(
+    #  sender = Sender(
+    sender = SimpleSender(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         n_properties=data_cfg.n_features,
@@ -991,7 +1098,8 @@ def load_game(hp, loss, data_cfg):
         causal=False,  # causal shouldn't matter, b/c only use the last token
     )
     #  receiver = Receiver(
-    receiver = ObjectAttReceiver(
+    #  receiver = ObjectAttReceiver(
+    receiver = DecontextualizedReceiver(
         dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         n_properties=data_cfg.n_features,
