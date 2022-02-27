@@ -70,7 +70,7 @@ class Hyperparameters(Serializable):
     ada_len_cost_thresh: float = 0.0
     free_symbols: int = 0
     length_cost: float = 0.0
-    initial_target_bias: float = 10.0
+    initial_target_bias: float = 0.0
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -201,8 +201,8 @@ class SimpleSender(nn.Module):
         self.dim_emb = dim_emb
         self.n_max_distractors = n_max_distractors
         self.predict_n_necessary = nn.Sequential(
-            #  nn.Linear(2*dim_emb, n_properties),  # when given ff
-            nn.Linear(dim_emb, n_properties),
+            nn.Linear(2*dim_emb, n_properties),  # when given ff
+            #  nn.Linear(dim_emb, n_properties),
         )
 
     def forward(self, x_and_features):
@@ -212,20 +212,20 @@ class SimpleSender(nn.Module):
         x = x[:, 0]  # disregard objects that are not target
         obj_emb = self.value_embedding(x + self.idx_offset)  
         obj_repr = self.transform(obj_emb.view((bs, 1, -1)))
-        # # concatenate to all features a "fake" missing feature
-        # z = torch.cat((self.dummy_feature.repeat((bs, 1, 1)), obj_emb), axis=1)
-        # # mark all objects with a property specific embedding
-       # z = z + self.mark_features
-        # #  print("fe size", features.size())
-        # #  print("z size", z.size())
-        # features_target = features.unsqueeze(2).repeat((1, 1, self.dim_emb))
-        # #  print("fe_tg size", features_target.size())
-        # ff = torch.gather(z, 1, features_target + 1)
-        # obj_and_features = torch.cat((obj_repr, ff), 1)
-        #  pred_n = self.predict_n_necessary(ff.view((bs, -1)))
-        pred_n = self.predict_n_necessary(obj_repr.squeeze(1))
-        return obj_repr.transpose(1, 0), None, pred_n
-        #  return obj_and_features.transpose(1, 0), None, pred_n
+        # concatenate to all features a "fake" missing feature
+        z = torch.cat((self.dummy_feature.repeat((bs, 1, 1)), obj_emb), axis=1)
+        # mark all objects with a property specific embedding
+        z = z + self.mark_features
+        #  print("fe size", features.size())
+        #  print("z size", z.size())
+        features_target = features.unsqueeze(2).repeat((1, 1, self.dim_emb))
+        #  print("fe_tg size", features_target.size())
+        ff = torch.gather(z, 1, features_target + 1)
+        obj_and_features = torch.cat((obj_repr, ff), 1)
+        pred_n = self.predict_n_necessary(ff.view((bs, -1)))
+        #  pred_n = self.predict_n_necessary(obj_repr.squeeze(1))
+        #  return obj_repr.transpose(1, 0), None, pred_n
+        return obj_and_features.transpose(1, 0), None, pred_n
 
 class ObjectAttSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
