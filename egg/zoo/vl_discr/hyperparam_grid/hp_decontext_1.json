@@ -1,0 +1,23 @@
+{
+  "vocab_size": [256],
+  "max_len": [3, 8],
+  "patience": [20],
+  "sender_nlayers": [1,2,3],
+  "receiver_nlayers": [1,2,3],
+  "sender_emb": [32],
+  "sender_hidden": [200, 400],
+  "length_cost": [0.03, 0.1, 0.3],
+  "ada_len_cost_thresh": [0.0, 0.3, 0.6],
+  "dropout": [0.1, 0.2, 0.3],
+  "free_symbols": [1, 2],
+  "n_epoch": [1000],
+  "optimizer": ["smorms3", "adam"],
+  "lr": [0.0003, 0.0001],
+  "adam_beta2": [0.9, 0.99, 0.999],
+  "seed": [0],
+  "n_examples": [5000],
+  "validation_freq": [5],
+  "random_seed": [0, 1, 2, 3],
+  "temperature": [0.9, 1.0, 1.25],
+  "batch_size": [32, 128]
+}
