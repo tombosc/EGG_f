@@ -53,6 +53,7 @@ class FixedPositionalEmbeddings(nn.Module):
 
 @dataclass
 class Hyperparameters(Serializable):
+    version: float = 1.1  # default version is the latest version
     sender_nlayers: int = 2
     receiver_nlayers: int = 1
     sender_hidden: int = 200  # size of hidden layer of Sender (default: 10)
@@ -972,8 +973,8 @@ class SenderReceiverTransformerGS(nn.Module):
         wlc = weighted_length_cost(
             loss_objs, 
             message,
-            self.length_cost,
             self.ada_len_cost_thresh, 
+            self.length_cost,
             self.free_symbols
         )
         loss = (
@@ -1038,12 +1039,14 @@ def weighted_length_cost(loss_objs, message, thresh, length_coef,
         length_loss_coef = 1
 
     one_hot_message = (len(message.size()) == 3)
+    # free_symbols is the # of free symbols besides eos
     if one_hot_message:
         unweighted_cost = ((1 - message[:, :, 0]).sum(1) - free_symbols)
     else:
         unweighted_cost = ((message != 0).sum(1) - free_symbols)
     if free_symbols > 0:
-        # free_symbols is the # of free symbols besides eos
+        # if there are free symbols, unweighted cost might be negative, 
+        # in which case we're only using free symbols and there is no penalty
         unweighted_cost = unweighted_cost * (unweighted_cost > 0)
 
     return length_coef * length_loss_coef * unweighted_cost
@@ -1073,6 +1076,10 @@ class TesterLoss(unittest.TestCase):
                 thresh=5.0, length_coef=0.5, free_symbols=2)  # inactive thresh
             print("2", wlc)
             assert(torch.allclose(wlc, torch.tensor([1.0, 0.0, 0.0, 0.5])))
+            wlc = weighted_length_cost(loss_objs, msg, 
+                thresh=0.0, length_coef=2.0, free_symbols=1)  # inactive thresh
+            print(wlc)
+            assert(torch.allclose(wlc, torch.tensor([6.0, 2.0, 0.0, 4.0])))
         
 
 def load_game(hp, loss, data_cfg):
