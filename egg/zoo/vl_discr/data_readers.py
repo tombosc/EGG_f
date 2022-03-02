@@ -250,7 +250,8 @@ class SimpleData(Dataset):
         n_examples: int = 1000
         max_value: int = 8
         n_features: int = 4
-        max_distractors: int = 3  # don't change, hardcoded
+        disentangled: bool = True
+        max_distractors: int = 3  # hardcoded, depends on disentangled...
     
     def __init__(self, config):
         c = config
@@ -261,15 +262,27 @@ class SimpleData(Dataset):
         # N_distractors: N
         # N_properties needed to distinguish = K
         # p(N) is computed so that P(K) = Σ P(K|N) P(N) is uniform
-        n_max_distractors = c.max_distractors
-        n_distractors = rng.choice(n_max_distractors, p=[1/2, 0, 1/2], size=c.n_examples) + 1
-        #  n_distractors = rng.choice(n_max_distractors, p=[1/12, 1/6, 1/4, 1/2], size=c.n_examples) + 1
+        
+        if c.disentangled:
+            assert(c.max_distractors == 3)
+            n_distractors = rng.choice(c.max_distractors, p=[1/2, 0, 1/2], size=c.n_examples) + 1
+            # in the case where K=2, one chance over 2, in the case where K=4,
+            # one over 4 (since equal proba of needing 2 attributes and 1
+            # attributes
+        else:
+            assert(c.max_distractors == 5)
+            # in the case where K=4, 1 chances over 2 to get it randomly (since only 2 cases
+            # where we need 2 attributes), in the case where K=6, 2 chances
+            # over 4
+            assert(c.n_features >= 5)
+            n_distractors = rng.choice(c.max_distractors, p=[0, 0, 1/2, 0, 1/2], size=c.n_examples) + 1
         zero = np.zeros(c.n_features, dtype=int)
         dict_K = {  # maps (N+1, i) to how many features are needed
             (2, 0): 1, (2, 1): 1,
             (3, 0): 1, (3, 1): 2, (3, 2): 1,
             (4, 0): 1, (4, 1): 2, (4, 2): 2, (4,3): 1,
             (5, 0): 1, (5, 1): 2, (5, 2): 2, (5,3): 2, (5,4): 1,
+            (6, 0): 1, (6, 1): 2, (6, 2): 2, (6,3): 2, (6,4): 2, (6,5): 1,
         }
         for N in n_distractors:
             # sample an object uniformly
@@ -293,12 +306,19 @@ class SimpleData(Dataset):
                 prev = distractor
             objects = [x_1] + distractors
             # add padding
-            objects += [zero,]*(n_max_distractors - N)
+            objects += [zero,]*(c.max_distractors - N)
             objects = np.asarray(objects)
             #  print(objects)
             # select target randomly
-            i_target = rng.choice(N+1)
-            K = dict_K[(N+1, i_target)]
+            if c.disentangled:
+                i_target = rng.choice(N+1)
+                K = dict_K[(N+1, i_target)]
+            else:
+                i_target = rng.choice(range(1, N))
+                K = dict_K[(N+1, i_target)]
+                assert(K > 1)
+                # if we do not have disentangled examples, K should be > 1
+
             #  target = objects[i_target]
             #  A = (target != objects[:N+1]).sum(0)
             #  import pdb; pdb.set_trace()
