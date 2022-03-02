@@ -50,12 +50,8 @@ if __name__ == '__main__':
 
         for k, v in hp.items():
             chosen_v = np.random.choice(v).item()
-            if type(chosen_v) == bool:
-                if chosen_v:
-                    cmd.append("--" + k)
-            else:
-                cmd.append("--" + k)
-                cmd.append(str(chosen_v))
+            cmd.append("--" + k)
+            cmd.append(str(chosen_v))
         H = sha256(''.join(cmd).encode('utf8')).hexdigest()[:32]
         checkpoint_dir = os.path.join(args.exp_dir, H + '_I')
         cmd += ['--checkpoint_dir', checkpoint_dir, '--checkpoint_best']

@@ -1,6 +1,7 @@
 {
   "max_distractors": [5],
   "disentangled": [false],
+  "n_features": [5],
   "version": [1.1],
   "vocab_size": [128],
   "max_len": [8],
