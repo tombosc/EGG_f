@@ -20,7 +20,7 @@ from egg.core.baselines import MeanBaseline, SenderLikeBaseline
 from .archs import Hyperparameters, load_game
 #  from .data_readers import DependentData as Data, init_dependent_data as init_data
 from .data_readers import SimpleData as Data, init_simple_data as init_data
-from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis, InteractionSaver
+from .callbacks import ComputeEntropy, LogNorms, LRAnnealer, PostTrainAnalysis 
 from simple_parsing import ArgumentParser
 
 def get_params(params):
@@ -110,21 +110,25 @@ def main(params):
     post_train_analysis = PostTrainAnalysis(game)
     freq_save = [opts.n_epochs]
     assert(opts.checkpoint_dir)
-    interaction_saver = InteractionSaver(
-        freq_save, freq_save,
-        folder_path=opts.checkpoint_dir,
-        save_early_stopping=True,
-    )
     # save data config
     os.makedirs(opts.checkpoint_dir)  
     dataset_json_path = os.path.join(opts.checkpoint_dir, 'data.json')
     opts.data.save(dataset_json_path)
     hp_json_path = os.path.join(opts.checkpoint_dir, 'hp.json')
     opts.hp.save(hp_json_path)
+    # data.json & hp.json are enough to reload model and data and do analysis,
+    # but NOT enough to re-run the model.
+    # this could be nice
+    full_args_path = os.path.join(opts.checkpoint_dir, 'full_args.json')
+    with open(full_args_path, 'w') as f:
+        stripped_opts = copy.deepcopy(vars(opts))
+        # serialize everything but unserializable stuff...
+        # https://stackoverflow.com/a/56138540/2670511
+        json.dump(stripped_opts, f, 
+            default=lambda o: f"<<non-serializable: {type(o).__qualname__}>>")
     #  with open(dataset_json_path, 'w') as f:
     #      f.write(opts.data.dumps_json())
-    callbacks = [entropy_calculator, interaction_saver]#, log_norms, post_train_analysis]
-    #  callbacks = [interaction_saver]#, log_norms, post_train_analysis]
+    callbacks = [entropy_calculator]#, log_norms, post_train_analysis]
     if opts.patience > 0:
         best_score_json_path = os.path.join(opts.checkpoint_dir, 'best_scores.json')
         early_stop = EarlyStopperNoImprovement(opts.patience,
