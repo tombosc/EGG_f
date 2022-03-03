@@ -84,15 +84,6 @@ def make_circulant(v):
     return M.to(v.device)
 
 
-def exponential_distance_vector(n, k):
-    assert(k>0)
-    # take exponential of distance
-    u = (torch.arange(n).float() * k).exp()
-    # take the negative, as it is going to only *discourage* attending to
-    # far-away positions, not *encourage* close positions
-    return - u + 1
-
-
 class ObjectAttEmbedder(nn.Module):
     """ Turn a discrete 2D matrix encoding feature of objects into a continuous
     2D matrix
@@ -102,8 +93,8 @@ class ObjectAttEmbedder(nn.Module):
         self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
         self.transform = nn.Sequential(
             nn.Linear(n_properties * dim_emb, dim_emb),
-            #  nn.ReLU(),
-            #  nn.LayerNorm(dim_emb),
+            nn.ReLU(),
+            nn.LayerNorm(dim_emb),
         )
         self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, dim_emb)))
         self.n_properties = n_properties
@@ -114,11 +105,9 @@ class ObjectAttEmbedder(nn.Module):
 
     def forward(self, x, mask_features=None):
         bs = x.size(0)
-        obj_emb = self.value_embedding(x)  # bs, n_obj, n_properties, dim_emb
+        obj_emb = self.value_embedding(x) # bs, n_obj, n_properties, dim_emb
         reshaped = obj_emb.view(bs, self.n_max_distractors + 1, -1)
         obj_emb = self.transform(reshaped)
-        # and a object specific embedding
-        obj_emb = obj_emb + self.mark_objects  
         # set padding objects to 0
         padding = (x.sum(2) == 0).unsqueeze(2)
         obj_emb = obj_emb.masked_fill(padding, 0)
@@ -189,11 +178,6 @@ class SimpleSender(nn.Module):
             n_layers=3, n_head=8):
         super(SimpleSender, self).__init__()
         self.value_embedding = nn.Embedding(1 + n_values * n_properties, dim_emb)
-        self.transform = nn.Sequential(
-            nn.Linear(n_properties * dim_emb, dim_emb),
-            #  nn.ReLU(),
-            #  nn.LayerNorm(dim_emb),
-        )
         self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
                 n_values, requires_grad=False)
         self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties+1, dim_emb)))
@@ -212,21 +196,20 @@ class SimpleSender(nn.Module):
         bs = x.size(0)
         x = x[:, 0]  # disregard objects that are not target
         obj_emb = self.value_embedding(x + self.idx_offset)  
-        obj_repr = self.transform(obj_emb.view((bs, 1, -1)))
+        d = obj_emb.size(-1)
         # concatenate to all features a "fake" missing feature
-        z = torch.cat((self.dummy_feature.repeat((bs, 1, 1)), obj_emb), axis=1)
+        z = torch.cat((self.dummy_feature.expand((bs, 1, d)), obj_emb), axis=1)
         # mark all objects with a property specific embedding
         z = z + self.mark_features
         #  print("fe size", features.size())
         #  print("z size", z.size())
-        features_target = features.unsqueeze(2).repeat((1, 1, self.dim_emb))
+        n_max_nec = features.size(1)
+        features_target = features.unsqueeze(2).expand((bs, n_max_nec, d))
         #  print("fe_tg size", features_target.size())
         ff = torch.gather(z, 1, features_target + 1)
-        obj_and_features = torch.cat((obj_repr, ff), 1)
         pred_n = self.predict_n_necessary(ff.view((bs, -1)))
-        #  pred_n = self.predict_n_necessary(obj_repr.squeeze(1))
-        #  return obj_repr.transpose(1, 0), None, pred_n
-        return obj_and_features.transpose(1, 0), None, pred_n
+        mask = (features == 0)
+        return ff.transpose(1, 0), mask, pred_n
 
 class ObjectAttSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
@@ -486,7 +469,6 @@ class DecontextualizedReceiver(nn.Module):
         self.pos_msg_embedding = FixedPositionalEmbeddings(dim_emb,
             batch_first=True)
         # them all in one matrix, we need to add offsets
-        self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
         self.n_properties = n_properties
@@ -508,13 +490,15 @@ class DecontextualizedReceiver(nn.Module):
         y = self.encoder(embed_msg.transpose(0, 1),
                          src_key_padding_mask=msg_padding,
         )  # L, bs, emb_dim
-        x, mask = self.embedder(x)
         bs = msg.size(0)
         dim_emb = y.size(-1)
         #  y = y.view((bs, self.n_max_distractors + 1, -1))
+        # eos is the last "False" in the mask
         eos_token_pos = (~msg_padding).int().sum(1) - 1
-        y_eos = y[eos_token_pos, torch.arange(bs).to(x.device)]
+        y_eos = y[eos_token_pos, torch.arange(bs).to(y.device)]
         obj_pred = self.msg_to_repr(y_eos)
+        # embed objects and compare them to message prediction
+        x, mask = self.embedder(x)
         match = torch.bmm(x, obj_pred.unsqueeze(2)).squeeze() 
         match = match.masked_fill(mask, float('-inf'))
         return match
@@ -1010,7 +994,8 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["weighted_length_cost"] = loss['w_length_cost']
         aux["pred_n_CE"] = loss['pred_n_CE']
         aux["acc"] = loss['acc']
-        aux["sender_input_to_send"] = sender_input[0].float()
+        aux["necessary_features"] = sender_input[1].float()
+        aux["sender_input"] = sender_input[0].float()
         aux["n_necessary_features"] = labels[0].float()
         aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
