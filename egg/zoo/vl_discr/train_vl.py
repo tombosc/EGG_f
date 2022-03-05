@@ -64,7 +64,7 @@ def entropy(probs):
 
 def loss(_sender_input, _message, receiver_input,
         receiver_output, labels):
-    K, N, i_target, necessary = labels
+    K, N, i_target, necessary, id_ = labels
     CE = F.cross_entropy(receiver_output, i_target, reduction='none')
     bs = i_target.size(0)
     assert(torch.allclose(_sender_input[:, 0], 

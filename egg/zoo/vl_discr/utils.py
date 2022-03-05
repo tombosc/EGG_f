@@ -7,35 +7,29 @@ import copy
 
 import egg.core.util as util
 from egg.core.distributed import not_distributed_context
-
+from .data_readers import SimpleData as Data, init_simple_data as init_data
 #  from .data_proto import Data as DataProto, init_data as init_data_proto
-#  from .archs_protoroles import Hyperparameters, load_game
-#  from .train_vl import loss_ordered, loss_unordered
+from .archs import Hyperparameters, load_game
+from .train_vl import loss
 
-#  def load_model_data_from_cp(checkpoint_fn):
-#      """ Load model and data from checkpoint.
-#      """
-#      dirname = os.path.dirname(checkpoint_fn)
-#      dataset_json = os.path.join(dirname, 'data.json')
-#      with open(dataset_json, 'r') as f:
-#          json_data = json.load(f)
-#          dataset_name = json_data["dataset"]
-#      checkpoint = torch.load(checkpoint_fn, map_location=torch.device('cpu'))
-#      hp_json = os.path.join(dirname, 'hp.json')
-#      if dataset_name == 'proto':
-#          data_cfg = DataProto.Settings.load(dataset_json)
-#          # ignore random seed of the model, b/c will load model
-#          dataset, train_data, valid_data, test_data = init_data_proto(data_cfg, 0, 128)
-#          hp = Hyperparameters.load(hp_json)
-#          if not hp.predict_classical_roles:
-#              loss = loss_ordered
-#          else:
-#              loss = loss_unordered
-#          model = load_game(hp, loss, data_cfg.n_thematic_roles)
-#          model.load_state_dict(checkpoint.model_state_dict)
-#      else:
-#          raise ValueError('Unknown dataset', dataset_name)
-#      return dirname, hp, model, dataset, train_data, valid_data, test_data
+def load_model_data_from_cp(checkpoint_fn, shuffle_train):
+    """ Load model and data from checkpoint.
+    """
+    dirname = os.path.dirname(checkpoint_fn)
+    dataset_json = os.path.join(dirname, 'data.json')
+    data_cfg = Data.Settings.load(dataset_json)
+    hp_json = os.path.join(dirname, 'hp.json')
+    hp = Hyperparameters.load(hp_json)
+    dataset, train_loader, valid_loader, test_loader = init_data(data_cfg,
+            0, 128, 256, shuffle_train)
+    device = 'gpu'
+    #  torch.manual_seed(hp.random_seed)  # for model parameters
+    checkpoint = torch.load(checkpoint_fn, map_location=torch.device('cpu'))
+    print("hp", hp)
+    print("data", data_cfg)
+    model = load_game(hp, loss, data_cfg)
+    model.load_state_dict(checkpoint.model_state_dict)
+    return dirname, hp, data_cfg, model, dataset, train_loader, valid_loader, test_loader
 
 def init_common_opts_reloading():
     """ Initialize EGG's global variable to acceptable values for *evaluating*

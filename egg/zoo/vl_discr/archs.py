@@ -724,7 +724,7 @@ class TransformerSenderGS(nn.Module):
         then we evaluate probabilities under a slightly difference probability
         distribution where sequence lengths are potentially inifinite.
         """
-        encoder_state, encoder_state_mask = self.agent(sender_input)
+        encoder_state, encoder_state_mask, pred_n = self.agent(sender_input)
         bs = encoder_state.size(1)
         device = encoder_state.device
 
@@ -921,19 +921,18 @@ class SenderReceiverTransformerGS(nn.Module):
         return self.sender.evaluate_proba_standard(sender_input, msgs,
                 has_max_len)
 
-    def eval_loss_receiver(self, sender_input, labels, receiver_input, msgs,
-            ids):
+    def eval_loss_receiver(self, sender_input, labels, receiver_input, msgs):
         self.eval()
-        receiver_outputs = self.receiver(msgs, receiver_input, ids)
+        receiver_outputs = self.receiver(msgs, receiver_input)
 
         losses = self.compute_loss(
             sender_input, labels, receiver_input, receiver_outputs, msgs,
-            one_hot_message=False, ids=ids,
+            None, one_hot_message=False, no_pred_n=True,
         )
-        return losses, losses['sum'], losses['sum'] - losses['length']
+        return losses
 
     def compute_loss(self, sender_input, labels, receiver_input,
-            receiver_outputs, message, pred_n, one_hot_message):
+            receiver_outputs, message, pred_n, one_hot_message, no_pred_n=False):
         loss_objs, aux = self.loss_objs(
             sender_input[0],
             message,
@@ -952,8 +951,13 @@ class SenderReceiverTransformerGS(nn.Module):
                 if f2 >= 0:
                     A[i, f2] = 1
             return A
-        one_hot_necessary = necessary_to_one_hot(labels[3]).to(pred_n.device)
-        pred_n_CE = F.binary_cross_entropy_with_logits(pred_n, one_hot_necessary, reduction='none')
+        if not no_pred_n:
+            one_hot_necessary = necessary_to_one_hot(labels[3]).to(pred_n.device)
+            pred_n_CE = F.binary_cross_entropy_with_logits(pred_n, one_hot_necessary, reduction='none')
+        else:
+            bs = loss_objs.size(0)
+            pred_n_CE = torch.tensor([[-1]]).expand((bs, 1))
+            pred_n_CE = pred_n_CE.to(sender_input[0].device)
         wlc = weighted_length_cost(
             loss_objs, 
             message,
@@ -994,6 +998,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["weighted_length_cost"] = loss['w_length_cost']
         aux["pred_n_CE"] = loss['pred_n_CE']
         aux["acc"] = loss['acc']
+        aux["id"] = labels[4].float()
         aux["necessary_features"] = sender_input[1].float()
         aux["sender_input"] = sender_input[0].float()
         aux["n_necessary_features"] = labels[0].float()

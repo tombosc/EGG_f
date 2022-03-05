@@ -284,7 +284,7 @@ class SimpleData(Dataset):
             (5, 0): 1, (5, 1): 2, (5, 2): 2, (5,3): 2, (5,4): 1,
             (6, 0): 1, (6, 1): 2, (6, 2): 2, (6,3): 2, (6,4): 2, (6,5): 1,
         }
-        for N in n_distractors:
+        for id_, N in enumerate(n_distractors):
             # sample an object uniformly
             x_1 = rng.choice(c.max_value, size=c.n_features) + 1
             prev = x_1
@@ -340,7 +340,7 @@ class SimpleData(Dataset):
                 np.asarray([K]), np.asarray([N]),
                 np.asarray([i_target]),
                 necessary_features,
-                objects,
+                id_,
             )
             receiver_input = objects
             self.data.append((
@@ -367,10 +367,11 @@ class SimpleData(Dataset):
         N = torch.tensor([e[1][1] for e in list_tensors]).squeeze()
         i_target = torch.tensor([e[1][2] for e in list_tensors]).squeeze()
         nec_features = torch.stack([torch.tensor(e[1][3]) for e in list_tensors]).squeeze()
+        ids = torch.tensor([e[1][4] for e in list_tensors]).squeeze()
         #  padded_inputs = pad_sequence(inputs, batch_first=True, padding_value=0)
         #  padded_outputs = pad_sequence(outputs, batch_first=True, padding_value=0)
         return ((p_sender_i, nec_features),
-            (K, N, i_target, nec_features),
+            (K, N, i_target, nec_features, ids),
             p_receiver_i,
         )
 
@@ -393,7 +394,7 @@ class DependentData(Dataset):
         n_examples: int = 1024*5
         min_distractors: int = 1
         max_distractors: int = 15
-        max_value: int = 5
+        max_value: int = 4
         n_features: int = 5
         gen_patience: int = 3
 
@@ -514,7 +515,8 @@ class DependentData(Dataset):
 
 
 
-def loaders_from_dataset(dataset, config_data, train_bs, valid_bs):
+def loaders_from_dataset(dataset, config_data, train_bs, valid_bs,
+        shuffle_train=True):
     N = len(dataset)
     train_size = int(N * (3/5))
     val_size = int(N * (1/5))
@@ -525,16 +527,16 @@ def loaders_from_dataset(dataset, config_data, train_bs, valid_bs):
         generator=torch.Generator().manual_seed(config_data.seed),
     )
     train_loader = DataLoader(train_ds, batch_size=train_bs,
-            shuffle=True, num_workers=1, collate_fn=dataset.collater,
-            drop_last=True,
+            shuffle=shuffle_train, num_workers=1, collate_fn=dataset.collater,
+            drop_last=False,
     )
     val_loader = DataLoader(val_ds, batch_size=valid_bs,
             shuffle=False, num_workers=1, collate_fn=dataset.collater,
-            drop_last=True,
+            drop_last=False,
     )
     test_loader = DataLoader(test_ds, batch_size=valid_bs,
             shuffle=False, num_workers=1, collate_fn=dataset.collater,
-            drop_last=True,
+            drop_last=False,
     )
     return train_loader, val_loader, test_loader
 
@@ -546,10 +548,12 @@ def init_dependent_data(data_cfg, random_seed, batch_size,
     return all_data, train_loader, valid_loader, test_loader
 
 
-def init_simple_data(data_cfg, random_seed, batch_size, validation_batch_size):
+def init_simple_data(data_cfg, random_seed, batch_size, validation_batch_size,
+        shuffle_train):
     all_data = SimpleData(data_cfg)
     train_loader, valid_loader, test_loader = loaders_from_dataset(
-        all_data, data_cfg, batch_size, validation_batch_size)
+        all_data, data_cfg, batch_size, validation_batch_size,
+        shuffle_train)
     return all_data, train_loader, valid_loader, test_loader
 
 def get_necessary_features(sender_input):
