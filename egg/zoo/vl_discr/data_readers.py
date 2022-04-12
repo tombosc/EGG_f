@@ -384,7 +384,6 @@ class TesterLoss(unittest.TestCase):
             K, N, target, mod_features, x = labels
             count_K[K[0]] += 1
         print(count_K)
-
         import pdb; pdb.set_trace()
 
 class DependentData(Dataset):
@@ -516,7 +515,7 @@ class DependentData(Dataset):
 
 
 def loaders_from_dataset(dataset, config_data, train_bs, valid_bs,
-        shuffle_train=True):
+        shuffle_train=True, num_workers=1):
     N = len(dataset)
     train_size = int(N * (3/5))
     val_size = int(N * (1/5))
@@ -527,15 +526,18 @@ def loaders_from_dataset(dataset, config_data, train_bs, valid_bs,
         generator=torch.Generator().manual_seed(config_data.seed),
     )
     train_loader = DataLoader(train_ds, batch_size=train_bs,
-            shuffle=shuffle_train, num_workers=1, collate_fn=dataset.collater,
+            shuffle=shuffle_train, num_workers=num_workers, 
+            collate_fn=dataset.collater,
             drop_last=False,
     )
     val_loader = DataLoader(val_ds, batch_size=valid_bs,
-            shuffle=False, num_workers=1, collate_fn=dataset.collater,
+            shuffle=False, num_workers=num_workers,
+            collate_fn=dataset.collater,
             drop_last=False,
     )
     test_loader = DataLoader(test_ds, batch_size=valid_bs,
-            shuffle=False, num_workers=1, collate_fn=dataset.collater,
+            shuffle=False, num_workers=num_workers,
+            collate_fn=dataset.collater,
             drop_last=False,
     )
     return train_loader, val_loader, test_loader
@@ -549,11 +551,11 @@ def init_dependent_data(data_cfg, random_seed, batch_size,
 
 
 def init_simple_data(data_cfg, random_seed, batch_size, validation_batch_size,
-        shuffle_train):
+        shuffle_train, num_workers=1):
     all_data = SimpleData(data_cfg)
     train_loader, valid_loader, test_loader = loaders_from_dataset(
         all_data, data_cfg, batch_size, validation_batch_size,
-        shuffle_train)
+        shuffle_train, num_workers)
     return all_data, train_loader, valid_loader, test_loader
 
 def get_necessary_features(sender_input):
