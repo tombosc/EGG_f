@@ -5,7 +5,9 @@ import torch
 from .data_readers import init_simple_data, SimpleData
 import numpy as np
 import torch.nn.functional as F
+import torch.nn as nn
 from collections import Counter, defaultdict
+
 
 class NPropPredictor(nn.Module):
     def __init__(self, dim_emb, dim_ff, dropout,
@@ -13,7 +15,6 @@ class NPropPredictor(nn.Module):
             initial_target_bias, 
             n_layers=3, n_head=8):
         super(NPropPredictor, self).__init__()
-        #  self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
         self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
                 n_values, requires_grad=False)
         self.value_embedding = nn.Embedding(1 + n_values*n_properties, dim_emb)
@@ -22,14 +23,11 @@ class NPropPredictor(nn.Module):
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
         self.n_properties = n_properties
-        self.encoder = nn.TransformerEncoder(encoder_layer, n_layers)
-        # embedding for marking positions to send
+        self.encoder_prop = nn.TransformerEncoder(encoder_layer, n_layers)
+        self.encoder_obj = nn.TransformerEncoder(encoder_layer, n_layers)
         self.n_max_distractors = n_max_distractors
-        #  K = n_max_distractors + 1
         self.predict_n_necessary = nn.Sequential(
-            nn.Linear(n_properties*dim_emb, dim_ff),
-            nn.ReLU(),
-            nn.Linear(dim_ff, n_properties),
+            nn.Linear(n_properties*dim_emb, n_properties),
         )
 
     def forward(self, x):
@@ -41,28 +39,34 @@ class NPropPredictor(nn.Module):
         nP = self.n_properties
         bs = x.size(0)
         d = x.size(-1)
-        mask_rs = mask.view((bs, N * nP))
-        y = self.encoder(
-            x.view((bs, N * nP, d)).transpose(0, 1),
+        # first, treat each property independently
+        x = x.transpose(2, 1).reshape((bs * nP, N, d)) 
+        mask_rs = mask.transpose(2, 1).reshape((bs * nP, N))
+        y = self.encoder_prop(
+            x.transpose(0, 1),
             src_key_padding_mask=mask_rs,
-        ).view((N, nP, bs, d))
-        y_cat = y[0].transpose(0, 1).reshape((bs, -1))
-        pred_n = self.predict_n_necessary(y_cat).squeeze()
+        ).view((N, bs, nP, d))
+        y = self.encoder_obj(
+            y[0].transpose(0, 1), #  nP, bs, d
+            #  src_key_padding_mask=mask_rs,
+        ).view((nP, bs, d))
+        y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
+        pred_n = self.predict_n_necessary(y_cat)
         # n_prop, bs, d
         return pred_n
 
-c = SimpleData.Settings(n_examples=4000, max_value=4)
-c.max_value=2
+c = SimpleData.Settings(n_examples=4000, max_value=4, n_features=4)
 all_data, train_loader, valid_loader, test_loader = init_simple_data(
     c, 0, 32, 1024, True, num_workers=0,
 )
-# seems like lots of heads and a large enough transformer is necessary!
-# however making it deeper doesn't help?
-m = NPropPredictor(64, 200, 0.3,
+
+m = NPropPredictor(32, 200, 0.2,
     c.n_features, c.max_value, c.max_distractors, 0,
-    n_layers=1, n_head=32,
+    n_layers=1, n_head=16,
 )
-optimizer = torch.optim.Adam(m.parameters(), lr=1e-3)
+
+#  optimizer = torch.optim.Adam(m.parameters(), lr=3e-4)#, betas=(0.9, 0.99))
+optimizer = torch.optim.Adam(m.parameters(), lr=1e-3, betas=(0.9, 0.9))
 
 def nec_feat_to_bool(nec_features, n_features):
     """ Transform a matrix (batch dim: rows) with necessary features (or -1)
@@ -94,7 +98,7 @@ def eval_pred(logits, tgts):
     print("k=2", bin_per_K[2] / n_bin_per_K[2])
     return is_eq.float().mean().item()
 
-for i in range(100):
+for i in range(200):
     train_loss, val_loss, test_loss = [], [], []
     for sender_in, _, _ in train_loader:
         inputs, nec_feats = sender_in
@@ -112,7 +116,9 @@ for i in range(100):
         for sender_in, _, _ in test_loader:
             inputs, nec_feats = sender_in
             tgts = nec_feat_to_bool(nec_feats, c.n_features)
-            _, _, pred_n = m(inputs)
+            pred_n = m(inputs)
+            #  if i==50:
+            #      import pdb; pdb.set_trace()
             loss = loss_func(pred_n, tgts.float())
             eval_pred(pred_n, tgts.float())
             #  print("H", eval_pred(pred_n, tgts.float()))
