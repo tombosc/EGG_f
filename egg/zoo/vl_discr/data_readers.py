@@ -103,7 +103,7 @@ class SimpleData(Dataset):
         
         if c.disentangled:
             assert(c.max_distractors == 4)
-            vector_proba = np.asarray([1/4., 1/4., 1/4., 1/4.])
+            vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
             prop_1 = np.asarray([1., 2/3., 2/4., 2/5.])
             n_distractors = rng.choice(c.max_distractors, p=vector_proba, size=c.n_examples) + 1
             p_1 = np.dot(vector_proba, prop_1)
