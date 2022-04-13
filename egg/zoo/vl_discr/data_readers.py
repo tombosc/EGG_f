@@ -101,8 +101,8 @@ class SimpleData(Dataset):
         # N_distractors: N
         # N_properties needed to distinguish = K
         
+        assert(c.max_distractors == 4)
         if c.disentangled:
-            assert(c.max_distractors == 4)
             vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
             prop_1 = np.asarray([1., 2/3., 2/4., 2/5.])
             n_distractors = rng.choice(c.max_distractors, p=vector_proba, size=c.n_examples) + 1
@@ -112,12 +112,13 @@ class SimpleData(Dataset):
             # one over 4 (since equal proba of needing 2 attributes and 1
             # attributes
         else:
-            assert(c.max_distractors == 4)
             # in the case where K=4, 1 chances over 2 to get it randomly (since only 2 cases
             # where we need 2 attributes), in the case where K=6, 2 chances
             # over 4
             assert(c.n_features >= 5)
-            n_distractors = rng.choice(c.max_distractors, p=[0, 0, 1/2, 0, 1/2], size=c.n_examples) + 1
+            vector_proba = np.asarray([0., 1/4., 1/4., 2/4.])
+            #  n_distractors = rng.choice(c.max_distractors, p=[0, 0, 1/2, 0, 1/2], size=c.n_examples) + 1
+            n_distractors = rng.choice(c.max_distractors, p=vector_proba, size=c.n_examples) + 1
         dict_K = {  # maps (N+1, i) to how many features are needed
             (2, 0): 1, (2, 1): 1,
             (3, 0): 1, (3, 1): 2, (3, 2): 1,
