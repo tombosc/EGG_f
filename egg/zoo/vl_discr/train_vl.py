@@ -78,7 +78,7 @@ def main(params):
     print(opts)
 
     data, train_loader, valid_loader, _ = init_data(opts.data,
-            opts.random_seed, opts.batch_size, 256)
+            opts.random_seed, opts.batch_size, 256, shuffle_train=True)
     device = opts.device
     torch.manual_seed(opts.random_seed)  # for model parameters
     if opts.hp.sender_cell == 'tfm' and opts.hp.mode == 'gs':

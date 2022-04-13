@@ -72,6 +72,7 @@ class Hyperparameters(Serializable):
     free_symbols: int = 0
     length_cost: float = 0.0
     initial_target_bias: float = 0.0
+    sender_type: str = 'simple'
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -90,6 +91,9 @@ class ObjectAttEmbedder(nn.Module):
     """
     def __init__(self, dim_emb, n_properties, n_values, n_max_distractors):
         super(ObjectAttEmbedder, self).__init__()
+        # we do not use different embedding vectors for the different 
+        # properties, since they're ungrounded here and transformed by a MLP
+        # afterwards.
         self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
         self.transform = nn.Sequential(
             nn.Linear(n_properties * dim_emb, dim_emb),
@@ -211,16 +215,15 @@ class SimpleSender(nn.Module):
         mask = (features == 0)
         return ff.transpose(1, 0), mask, pred_n
 
+
+
 class ObjectAttSender(nn.Module):
-    def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
+    def __init__(self, dim_emb, dim_ff, dropout,
             n_properties, n_values, n_max_distractors, 
             initial_target_bias, 
-            max_len, 
             n_layers=3, n_head=8):
         super(ObjectAttSender, self).__init__()
-        self.max_len = max_len
         self.embedder = ObjectAttEmbedder(dim_emb, n_properties, n_values, n_max_distractors)
-        self.vocab_size = vocab_size
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
         self.n_properties = n_properties
@@ -1071,20 +1074,83 @@ class TesterLoss(unittest.TestCase):
             print(wlc)
             assert(torch.allclose(wlc, torch.tensor([6.0, 2.0, 0.0, 4.0])))
         
+class PragmaSender(nn.Module):
+    def __init__(self, dim_emb, dim_ff, dropout,
+            n_properties, n_values, n_max_distractors, 
+            n_layers=3, n_head=8):
+        super(PragmaSender, self).__init__()
+        self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
+                n_values, requires_grad=False)
+        self.value_embedding = nn.Embedding(1 + n_values*n_properties, dim_emb)
+        self.mark_features = nn.Parameter(torch.randn(size=(1, 1, n_properties, dim_emb)))
+        self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, 1, dim_emb)))
+        activation = 'gelu'
+        encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
+        self.n_properties = n_properties
+        self.encoder_prop = nn.TransformerEncoder(encoder_layer, n_layers)
+        self.encoder_obj = nn.TransformerEncoder(encoder_layer, n_layers)
+        self.n_max_distractors = n_max_distractors
+        self.predict_n_necessary = nn.Sequential(
+            #  nn.Linear(n_properties*dim_emb, n_properties),
+            nn.Linear(dim_emb, 1),
+        )
+        self.ln = nn.LayerNorm(dim_emb)
+
+    def forward(self, x_and_features):
+        x, _ = x_and_features  # ignore features
+        mask = (x == 0)
+        x = self.value_embedding(x + self.idx_offset.unsqueeze(0))
+        x += self.mark_features
+        x += self.mark_objects
+        N = self.n_max_distractors + 1
+        nP = self.n_properties
+        bs = x.size(0)
+        d = x.size(-1)
+        # first, treat each property independently
+        x = x.transpose(2, 1).reshape((bs * nP, N, d)) 
+        mask_rs = mask.transpose(2, 1).reshape((bs * nP, N))
+        y = self.encoder_prop(
+            x.transpose(0, 1),
+            src_key_padding_mask=mask_rs,
+        ).view((N, bs, nP, d))
+        y = self.ln(y[0])
+        y = self.encoder_obj(
+            y.transpose(0, 1), #  nP, bs, d
+        )
+        # inidependent prediction for each prop.
+        # should be enough, since there is a Tfm before
+        y_cat = y.transpose(0, 1).reshape((bs * nP, d))
+        pred_n = self.predict_n_necessary(y_cat).view((bs, nP))
+        # joint MLP prediction
+        #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
+        #  pred_n = self.predict_n_necessary(y_cat)
+        # n_prop, bs, d
+        return y, None, pred_n
 
 def load_game(hp, loss, data_cfg):
     #  sender = Sender(
-    sender = SimpleSender(
-        dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
-        vocab_size=hp.vocab_size, dropout=hp.dropout,
-        n_properties=data_cfg.n_features,
-        n_values=data_cfg.max_value,
-        n_max_distractors=data_cfg.max_distractors,
-        initial_target_bias=hp.initial_target_bias,
-        max_len=hp.max_len,
-        n_layers=hp.receiver_nlayers,
-        n_head=8,
-    )
+    if hp.sender_type == 'simple':
+        sender = SimpleSender(
+            dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
+            vocab_size=hp.vocab_size, dropout=hp.dropout,
+            n_properties=data_cfg.n_features,
+            n_values=data_cfg.max_value,
+            n_max_distractors=data_cfg.max_distractors,
+            initial_target_bias=hp.initial_target_bias,
+            max_len=hp.max_len,
+            n_layers=hp.receiver_nlayers,
+            n_head=8,
+        )
+    elif hp.sender_type == 'pragma':
+        sender = PragmaSender(
+            dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
+            dropout=hp.dropout,
+            n_properties=data_cfg.n_features,
+            n_values=data_cfg.max_value,
+            n_max_distractors=data_cfg.max_distractors,
+            n_layers=hp.receiver_nlayers,
+            n_head=16,
+        )
     sender = TransformerSenderGS(
         agent=sender, vocab_size=hp.vocab_size,
         embed_dim=hp.sender_emb, max_len=hp.max_len,
