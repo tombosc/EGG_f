@@ -56,13 +56,13 @@ class Hyperparameters(Serializable):
     version: float = 1.1  # default version is the latest version
     sender_nlayers: int = 2
     receiver_nlayers: int = 1
-    sender_hidden: int = 200  # size of hidden layer of Sender (default: 10)
-    #  receiver_hidden: int = 10  # size of hidden layer of Receiver (default: 10)
+    sender_hidden: int = 200  # size of hidden layer of Sender 
+    #  receiver_hidden: int = 10  # size of hidden layer of Receiver 
     sender_cell: str = 'tfm'
     receiver_cell: str = 'tfm'
     dropout: float = 0.1
-    sender_emb: int = 32  # size of embeddings of Sender (default: 10)
-    #  receiver_emb: int = 10  # size of embeddings of Receiver (default: 10)
+    sender_emb: int = 32  # size of embeddings of Sender 
+    receiver_emb: int = 32  # size of embeddings of Receiver 
     max_len: int = 3
     vocab_size: int = 64
     mode: str = 'gs'
@@ -97,22 +97,18 @@ class ObjectAttEmbedder(nn.Module):
         self.value_embedding = nn.Embedding(1 + n_values, dim_emb)
         self.transform = nn.Sequential(
             nn.Linear(n_properties * dim_emb, dim_emb),
-            nn.ReLU(),
-            nn.LayerNorm(dim_emb),
+            #  nn.ReLU(),
+            #  nn.LayerNorm(dim_emb),
         )
-        self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, dim_emb)))
-        self.n_properties = n_properties
-        self.dim_emb = dim_emb
         self.n_max_distractors = n_max_distractors
         self.mark_absent = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
-
 
     def forward(self, x, mask_features=None):
         bs = x.size(0)
         obj_emb = self.value_embedding(x) # bs, n_obj, n_properties, dim_emb
         reshaped = obj_emb.view(bs, self.n_max_distractors + 1, -1)
         obj_emb = self.transform(reshaped)
-        # set padding objects to 0
+        # mark padding objects and return padding mask
         padding = (x.sum(2) == 0).unsqueeze(2)
         obj_emb = obj_emb.masked_fill(padding, 0)
         obj_emb += padding * self.mark_absent
@@ -502,6 +498,7 @@ class DecontextualizedReceiver(nn.Module):
         obj_pred = self.msg_to_repr(y_eos)
         # embed objects and compare them to message prediction
         x, mask = self.embedder(x)
+        # (bs, n_obj, d) x (bs, d, 1)
         match = torch.bmm(x, obj_pred.unsqueeze(2)).squeeze() 
         match = match.masked_fill(mask, float('-inf'))
         return match
@@ -991,7 +988,6 @@ class SenderReceiverTransformerGS(nn.Module):
                     L.unsqueeze(1))
         message[:,:,0].masked_fill_(mask, 1)  # eos
         message[:,:,1:].masked_fill_(mask.unsqueeze(2), 0)  # eos
-
         receiver_outputs = self.receiver(message, receiver_input)
         loss = self.compute_loss(sender_input, labels, receiver_input,
             receiver_outputs, message, pred_n, one_hot_message=True)
@@ -1004,6 +1000,7 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["id"] = labels[4].float()
         aux["necessary_features"] = sender_input[1].float()
         aux["sender_input"] = sender_input[0].float()
+        aux["receiver_input"] = receiver_input.float()
         aux["n_necessary_features"] = labels[0].float()
         aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
@@ -1094,13 +1091,12 @@ class PragmaSender(nn.Module):
             #  nn.Linear(n_properties*dim_emb, n_properties),
             nn.Linear(dim_emb, 1),
         )
-        self.ln = nn.LayerNorm(dim_emb)
 
     def forward(self, x_and_features):
         x, _ = x_and_features  # ignore features
         mask = (x == 0)
         x = self.value_embedding(x + self.idx_offset.unsqueeze(0))
-        x += self.mark_features
+        #  x += self.mark_features
         x += self.mark_objects
         N = self.n_max_distractors + 1
         nP = self.n_properties
@@ -1113,14 +1109,14 @@ class PragmaSender(nn.Module):
             x.transpose(0, 1),
             src_key_padding_mask=mask_rs,
         ).view((N, bs, nP, d))
-        y = self.ln(y[0])
+        y = y[0] + self.mark_features.squeeze(1)
         y = self.encoder_obj(
             y.transpose(0, 1), #  nP, bs, d
         )
         # inidependent prediction for each prop.
         # should be enough, since there is a Tfm before
         y_cat = y.transpose(0, 1).reshape((bs * nP, d))
-        pred_n = self.predict_n_necessary(y_cat).view((bs, nP))
+        pred_n = self.predict_n_necessary(y_cat.detach()).view((bs, nP))
         # joint MLP prediction
         #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
         #  pred_n = self.predict_n_necessary(y_cat)
@@ -1148,8 +1144,8 @@ def load_game(hp, loss, data_cfg):
             n_properties=data_cfg.n_features,
             n_values=data_cfg.max_value,
             n_max_distractors=data_cfg.max_distractors,
-            n_layers=hp.receiver_nlayers,
-            n_head=16,
+            n_layers=hp.sender_nlayers,
+            n_head=32,
         )
     sender = TransformerSenderGS(
         agent=sender, vocab_size=hp.vocab_size,
@@ -1163,7 +1159,7 @@ def load_game(hp, loss, data_cfg):
     #  receiver = Receiver(
     #  receiver = ObjectAttReceiver(
     receiver = DecontextualizedReceiver(
-        dim_emb=hp.sender_emb, dim_ff=hp.sender_hidden,
+        dim_emb=hp.receiver_emb, dim_ff=hp.sender_hidden,
         vocab_size=hp.vocab_size, dropout=hp.dropout,
         n_properties=data_cfg.n_features,
         n_values=data_cfg.max_value,
