@@ -55,6 +55,7 @@ class FixedPositionalEmbeddings(nn.Module):
 class Hyperparameters(Serializable):
     version: float = 1.1  # default version is the latest version
     sender_nlayers: int = 2
+    sender_pragma_nheads: int = 32  # default, but not optimal
     receiver_nlayers: int = 1
     sender_hidden: int = 200  # size of hidden layer of Sender 
     #  receiver_hidden: int = 10  # size of hidden layer of Receiver 
@@ -1145,7 +1146,7 @@ def load_game(hp, loss, data_cfg):
             n_values=data_cfg.max_value,
             n_max_distractors=data_cfg.max_distractors,
             n_layers=hp.sender_nlayers,
-            n_head=32,
+            n_head=hp.sender_pragma_nheads,
         )
     sender = TransformerSenderGS(
         agent=sender, vocab_size=hp.vocab_size,

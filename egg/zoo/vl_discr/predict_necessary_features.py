@@ -81,12 +81,12 @@ class NPropPredictor(nn.Module):
 c = SimpleData.Settings(n_examples=4000, max_value=8, ood=True,
         disentangled=True, max_distractors=4, n_features=5)
 all_data, train_loader, valid_loader, test_loader = init_simple_data(
-    c, 0, 32, 1024, True, num_workers=0,
+    c, 0, 128, 1024, True, num_workers=0,
 )
 
 m = NPropPredictor(128, 200, 0.2,
     c.n_features, c.max_value, c.max_distractors, 0,
-    n_layers=2, n_head=32,
+    n_layers=2, n_head=8,
 )
 
 #  optimizer = torch.optim.Adam(m.parameters(), lr=3e-4)#, betas=(0.9, 0.99))
@@ -148,7 +148,8 @@ for i in range(300):
             inputs, nec_feats = sender_in
             tgts = nec_feat_to_bool(nec_feats, c.n_features)
             pred_n, _ = m(inputs)
-            if i==50 or i==200:
+            #  if i==50 or i==200:
+            if i==200:
                 import pdb; pdb.set_trace()
             loss = loss_func(pred_n, tgts.float())
             eval_pred(pred_n, tgts.float())
