@@ -68,6 +68,8 @@ class Hyperparameters(Serializable):
     sender_cell: str = 'tfm'
     receiver_cell: str = 'tfm'
     dropout: float = 0.1
+    pred_n_aux: bool = False  # True if use aux loss to train the
+    # PragmaSender mask network
     sender_emb: int = 32  # size of embeddings of Sender 
     receiver_emb: int = 32  # size of embeddings of Receiver 
     max_len: int = 3
@@ -976,10 +978,11 @@ class SenderReceiverTransformerGS(nn.Module):
         loss = (
             loss_objs +
             wlc +
-            0.03 * pred_n_CE.sum(1)
+            pred_n_CE.sum(1)
         )
         out = {
            'sum': loss, 
+           'objs_w_length_cost': loss_objs + wlc,
            'objs': loss_objs,
            'w_length_cost': wlc,
            'pred_n_CE': pred_n_CE,
@@ -1012,7 +1015,8 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["n_necessary_features"] = labels[0].float()
         aux['msg'] = message.argmax(2).float()  # need floats everywhere in aux
         # I don't want to change the API of interactions so I add it here.
-        aux['loss'] = loss['sum']
+        aux['loss'] = loss['objs_w_length_cost']
+        aux['loss_optim'] = loss['sum']
 
         logging_strategy = (
             self.train_logging_strategy if self.training else self.test_logging_strategy
@@ -1082,13 +1086,16 @@ class TesterLoss(unittest.TestCase):
 class PragmaSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, dropout,
             n_properties, n_values, n_max_distractors, 
-            prediction_features,
+            prediction_features, pred_n_aux,
             n_layers=3, n_head=8):
         super(PragmaSender, self).__init__()
-        self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
-                n_values, requires_grad=False)
+        self.idx_offset = nn.Parameter(
+            torch.arange(0, n_properties).unsqueeze(0).unsqueeze(0) * n_values,
+            requires_grad=False,
+        )
+        self.pred_n_aux = pred_n_aux
         self.value_embedding = nn.Embedding(1 + n_values*n_properties, dim_emb)
-        self.mark_features = nn.Parameter(torch.randn(size=(1, 1, n_properties, dim_emb)))
+        self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties, dim_emb)))
         self.mark_objects = nn.Parameter(torch.randn(size=(1, n_max_distractors+1, 1, dim_emb)))
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
@@ -1109,9 +1116,8 @@ class PragmaSender(nn.Module):
     def forward(self, x_and_features):
         x, _ = x_and_features  # ignore features
         mask = (x == 0)
-        x = self.value_embedding(x + self.idx_offset.unsqueeze(0))
-        #  x += self.mark_features
-        x += self.mark_objects
+        raw_x = self.value_embedding(x + self.idx_offset)
+        x = raw_x + self.mark_objects
         N = self.n_max_distractors + 1
         nP = self.n_properties
         bs = x.size(0)
@@ -1123,14 +1129,17 @@ class PragmaSender(nn.Module):
             x_rs.transpose(0, 1),
             src_key_padding_mask=mask_rs,
         ).view((N, bs, nP, d))
-        y = y[0] + self.mark_features.squeeze(1)
+        y = y[0] + self.mark_features
         y = self.encoder_obj(
             y.transpose(0, 1), #  nP, bs, d
         )
         # inidependent prediction for each prop.
         # should be enough, since there is a Tfm before
         y_cat = y.transpose(0, 1).reshape((bs * nP, d))
-        pred_n = self.predict_n_necessary(y_cat.detach()).view((bs, nP))
+        if self.pred_n_aux:
+            pred_n = self.predict_n_necessary(y_cat).view((bs, nP))
+        else:
+            pred_n = self.predict_n_necessary(y_cat.detach()).view((bs, nP))
         # joint MLP prediction
         #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
         #  pred_n = self.predict_n_necessary(y_cat)
@@ -1139,8 +1148,8 @@ class PragmaSender(nn.Module):
             mask = F.sigmoid(self.mask_value(y_cat).view((bs, nP)))
             mask = mask.transpose(0, 1).unsqueeze(2)
             #  print("gate mean", mask.mean(1).mean(), "std", mask.std(1).mean())
-            raw_x = (x  + self.mark_features)[:, 0].transpose(0, 1)
-            gated_x = raw_x * mask
+            x = (raw_x + self.mark_features)[:, 0].transpose(0, 1)
+            gated_x = x * mask
             return gated_x, None, pred_n
         elif self.prediction_features.direct:
             return y, None, pred_n
@@ -1167,6 +1176,7 @@ def load_game(hp, loss, data_cfg):
             n_values=data_cfg.max_value,
             n_max_distractors=data_cfg.max_distractors,
             prediction_features=PragmaPredictionFeatures[hp.pragma_prediction_features],
+            pred_n_aux=hp.pred_n_aux,
             n_layers=hp.sender_nlayers,
             n_head=hp.sender_pragma_nheads,
         )

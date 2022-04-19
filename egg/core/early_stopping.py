@@ -44,7 +44,7 @@ class EarlyStopperNoImprovement(EarlyStopper):
     """
     Stops when loss hasn't improved for "patience" epochs on validation set.
     """
-    def __init__(self, patience: int, log_path: str, validation = True,
+    def __init__(self, patience: int, log_path: str, field_name: str, validation = True,
     ) -> None:
         """
         :param patience: when it has been patience epochs that the loss has not
@@ -53,6 +53,7 @@ class EarlyStopperNoImprovement(EarlyStopper):
         super(EarlyStopperNoImprovement, self).__init__(validation)
         self.patience = patience
         self.log_path = log_path
+        self.field_name = field_name
 
     def should_stop(self) -> bool:
         if self.validation:
@@ -66,8 +67,8 @@ class EarlyStopperNoImprovement(EarlyStopper):
             ), "Training data must be provided for early stooping to work"
             stats = self.train_stats
 
-        #  scores = [interac.aux[self.field_name] for _, interac in stats]
-        scores = [loss for loss, _ in stats]
+        scores = [interac.aux[self.field_name].mean().item() for _, interac in stats]
+        #  scores = [loss for loss, _ in stats]
         min_idx, min_val = min(enumerate(scores), key=operator.itemgetter(1))
         with open(self.log_path, 'w') as f:
             log = {"best_score": min_val, "epoch_factor": min_idx}

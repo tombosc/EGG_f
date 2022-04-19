@@ -131,8 +131,10 @@ def main(params):
     callbacks = [entropy_calculator]#, log_norms, post_train_analysis]
     if opts.patience > 0:
         best_score_json_path = os.path.join(opts.checkpoint_dir, 'best_scores.json')
+        # don't early stop on the total loss, which includes probing classifier
+        # losses
         early_stop = EarlyStopperNoImprovement(opts.patience,
-                best_score_json_path, True)
+                best_score_json_path, 'loss', True)
         callbacks.append(early_stop)
 
     if opts.optimizer == 'sgd':
