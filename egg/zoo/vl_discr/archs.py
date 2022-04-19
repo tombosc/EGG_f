@@ -11,6 +11,12 @@ from dataclasses import dataclass
 from collections import namedtuple
 from simple_parsing.helpers import Serializable
 import unittest
+from enum import Enum
+
+        
+class PragmaPredictionFeatures(Enum):
+    direct = 1
+    sigmoid_gate = 2
 
 def eos_mask(msg):
     n_D = len(msg.size())
@@ -74,6 +80,7 @@ class Hyperparameters(Serializable):
     length_cost: float = 0.0
     initial_target_bias: float = 0.0
     sender_type: str = 'simple'
+    pragma_prediction_features: str = "direct"
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -1071,10 +1078,11 @@ class TesterLoss(unittest.TestCase):
                 thresh=0.0, length_coef=2.0, free_symbols=1)  # inactive thresh
             print(wlc)
             assert(torch.allclose(wlc, torch.tensor([6.0, 2.0, 0.0, 4.0])))
-        
+
 class PragmaSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, dropout,
             n_properties, n_values, n_max_distractors, 
+            prediction_features,
             n_layers=3, n_head=8):
         super(PragmaSender, self).__init__()
         self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
@@ -1092,6 +1100,11 @@ class PragmaSender(nn.Module):
             #  nn.Linear(n_properties*dim_emb, n_properties),
             nn.Linear(dim_emb, 1),
         )
+        self.prediction_features = prediction_features
+        if prediction_features.sigmoid_gate:
+            self.mask_value = nn.Sequential(
+                nn.Linear(dim_emb, 1),
+            )
 
     def forward(self, x_and_features):
         x, _ = x_and_features  # ignore features
@@ -1104,10 +1117,10 @@ class PragmaSender(nn.Module):
         bs = x.size(0)
         d = x.size(-1)
         # first, treat each property independently
-        x = x.transpose(2, 1).reshape((bs * nP, N, d)) 
+        x_rs = x.transpose(2, 1).reshape((bs * nP, N, d)) 
         mask_rs = mask.transpose(2, 1).reshape((bs * nP, N))
         y = self.encoder_prop(
-            x.transpose(0, 1),
+            x_rs.transpose(0, 1),
             src_key_padding_mask=mask_rs,
         ).view((N, bs, nP, d))
         y = y[0] + self.mark_features.squeeze(1)
@@ -1122,7 +1135,15 @@ class PragmaSender(nn.Module):
         #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
         #  pred_n = self.predict_n_necessary(y_cat)
         # n_prop, bs, d
-        return y, None, pred_n
+        if self.prediction_features.sigmoid_gate:
+            mask = F.sigmoid(self.mask_value(y_cat).view((bs, nP)))
+            mask = mask.transpose(0, 1).unsqueeze(2)
+            #  print("gate mean", mask.mean(1).mean(), "std", mask.std(1).mean())
+            raw_x = (x  + self.mark_features)[:, 0].transpose(0, 1)
+            gated_x = raw_x * mask
+            return gated_x, None, pred_n
+        elif self.prediction_features.direct:
+            return y, None, pred_n
 
 def load_game(hp, loss, data_cfg):
     #  sender = Sender(
@@ -1145,6 +1166,7 @@ def load_game(hp, loss, data_cfg):
             n_properties=data_cfg.n_features,
             n_values=data_cfg.max_value,
             n_max_distractors=data_cfg.max_distractors,
+            prediction_features=PragmaPredictionFeatures[hp.pragma_prediction_features],
             n_layers=hp.sender_nlayers,
             n_head=hp.sender_pragma_nheads,
         )
