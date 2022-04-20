@@ -16,7 +16,7 @@ from enum import Enum
         
 class PragmaPredictionFeatures(Enum):
     direct = 1
-    sigmoid_gate = 2
+    att_bias = 2
 
 def eos_mask(msg):
     n_D = len(msg.size())
@@ -602,12 +602,16 @@ class TransformerSenderGS(nn.Module):
                 #  attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
             else:
                 attn_mask = None
+            if encoder_state_mask is not None:
+                mm = encoder_state_mask[:, :step+1]
+            else:
+                mm = None
 
             input = self.pos_embed_tokens(input_no_pos)
 
             output = self.decoder(
                 input, encoder_state, tgt_mask=attn_mask,
-                memory_key_padding_mask=encoder_state_mask,
+                memory_mask=mm,
             )
             step_logits = self.embedding_to_vocab(output[-1])
             distrib, sample = gumbel_softmax_sample(
@@ -751,12 +755,6 @@ class TransformerSenderGS(nn.Module):
         input = self.pos_embed_tokens(input_no_pos)
         L_size = input.size(0)
 
-        # !always with causal option here!
-        # at train time, we don't need it: in a for loop, we predict, embed,
-        # concatenate, until the sequence is complete, and always use the last
-        # token to make the prediction. Here, we use all the tokens at once 
-        # (not within a for loop) to predict all the next words at once, so 
-        # we need this mask.
         attn_mask = torch.triu(  # upper-tri w/o diagonal
             torch.ones(L_size, L_size), diagonal=1,
         ).to(device).bool()  # noqa: E226
@@ -1087,8 +1085,10 @@ class PragmaSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, dropout,
             n_properties, n_values, n_max_distractors, 
             prediction_features, pred_n_aux,
+            max_len,
             n_layers=3, n_head=8):
         super(PragmaSender, self).__init__()
+        self.n_heads = n_head
         self.idx_offset = nn.Parameter(
             torch.arange(0, n_properties).unsqueeze(0).unsqueeze(0) * n_values,
             requires_grad=False,
@@ -1100,6 +1100,7 @@ class PragmaSender(nn.Module):
         activation = 'gelu'
         encoder_layer = nn.TransformerEncoderLayer(dim_emb, n_head, dim_ff, dropout, activation)
         self.n_properties = n_properties
+
         self.encoder_prop = nn.TransformerEncoder(encoder_layer, n_layers)
         self.encoder_obj = nn.TransformerEncoder(encoder_layer, n_layers)
         self.n_max_distractors = n_max_distractors
@@ -1108,9 +1109,11 @@ class PragmaSender(nn.Module):
             nn.Linear(dim_emb, 1),
         )
         self.prediction_features = prediction_features
-        if prediction_features.sigmoid_gate:
+        self.max_len = max_len
+        if prediction_features.att_bias:
             self.mask_value = nn.Sequential(
                 nn.Linear(dim_emb, 1),
+                nn.Softplus(),
             )
 
     def forward(self, x_and_features):
@@ -1144,13 +1147,19 @@ class PragmaSender(nn.Module):
         #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
         #  pred_n = self.predict_n_necessary(y_cat)
         # n_prop, bs, d
-        if self.prediction_features.sigmoid_gate:
-            mask = F.sigmoid(self.mask_value(y_cat).view((bs, nP)))
-            mask = mask.transpose(0, 1).unsqueeze(2)
+        if self.prediction_features.att_bias:
+            # compute a memory_mask that biases some attention weights
+            # negatively (features that are not necessary to send)
+            # these biases will be constant during the entire decoding of the
+            # message and on all attention heads of the decoder so we need to
+            # expand
+            mask = - self.mask_value(y_cat).view((bs, nP))
             #  print("gate mean", mask.mean(1).mean(), "std", mask.std(1).mean())
+            mask = mask.unsqueeze(1).expand(-1, self.n_heads, -1)
+            mask = mask.unsqueeze(2).expand(-1, -1, self.max_len, -1)
+            mask = mask.reshape((bs * self.n_heads, self.max_len, nP))
             x = (raw_x + self.mark_features)[:, 0].transpose(0, 1)
-            gated_x = x * mask
-            return gated_x, None, pred_n
+            return x, mask, pred_n
         elif self.prediction_features.direct:
             return y, None, pred_n
 
@@ -1177,6 +1186,7 @@ def load_game(hp, loss, data_cfg):
             n_max_distractors=data_cfg.max_distractors,
             prediction_features=PragmaPredictionFeatures[hp.pragma_prediction_features],
             pred_n_aux=hp.pred_n_aux,
+            max_len=hp.max_len,
             n_layers=hp.sender_nlayers,
             n_head=hp.sender_pragma_nheads,
         )
@@ -1187,7 +1197,7 @@ def load_game(hp, loss, data_cfg):
         num_heads=8, hidden_size=hp.sender_hidden,
         temperature=hp.temperature,
         dropout=hp.dropout,
-        causal=False,  # causal shouldn't matter, b/c only use the last token
+        causal=True, 
     )
     #  receiver = Receiver(
     #  receiver = ObjectAttReceiver(

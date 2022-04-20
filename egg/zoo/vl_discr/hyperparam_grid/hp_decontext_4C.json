@@ -10,7 +10,7 @@
   "receiver_emb": [32],
   "sender_hidden": [200],
   "ada_len_cost_thresh": [0.0, 0.001],
-  "length_cost": [0.1, 0.3],
+  "length_cost": [0.3, 0.6, 1.0],
   "dropout": [0.2],
   "max_value": [8],
   "n_features": [5],
@@ -30,5 +30,5 @@
   "temperature": [0.9, 1.0, 1.2],
   "batch_size": [128, 512],
   "sender_type": ["pragma"],
-  "pragma_prediction_features": ["sigmoid_gate"]
+  "pragma_prediction_features": ["att_bias"]
 }
