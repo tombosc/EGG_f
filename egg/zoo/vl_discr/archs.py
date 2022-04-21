@@ -69,6 +69,7 @@ class Hyperparameters(Serializable):
     receiver_cell: str = 'tfm'
     dropout: float = 0.1
     pred_n_aux: bool = False  # True if use aux loss to train the
+    pred_n_aux_coef: float = 1.0
     # PragmaSender mask network
     sender_emb: int = 32  # size of embeddings of Sender 
     receiver_emb: int = 32  # size of embeddings of Receiver 
@@ -876,6 +877,7 @@ class SenderReceiverTransformerGS(nn.Module):
         sender,
         receiver,
         loss_objs, 
+        pred_n_aux_coef,
         length_cost=0.0,
         ada_len_cost_thresh=0,
         free_symbols=0,
@@ -911,6 +913,7 @@ class SenderReceiverTransformerGS(nn.Module):
         self.receiver = receiver
         self.loss_objs = loss_objs
         self.length_cost = length_cost
+        self.pred_n_aux_coef = pred_n_aux_coef
         self.train_logging_strategy = (
             LoggingStrategy()
             if train_logging_strategy is None
@@ -976,7 +979,7 @@ class SenderReceiverTransformerGS(nn.Module):
         loss = (
             loss_objs +
             wlc +
-            pred_n_CE.sum(1)
+            self.pred_n_aux_coef * pred_n_CE.sum(1)
         )
         out = {
            'sum': loss, 
@@ -1211,10 +1214,12 @@ def load_game(hp, loss, data_cfg):
         n_layers=hp.receiver_nlayers,
         n_head=8,
     )
-    game = SenderReceiverTransformerGS(sender, receiver,
-            loss_objs=loss,
-            length_cost = hp.length_cost,
-            ada_len_cost_thresh = hp.ada_len_cost_thresh,
-            free_symbols = hp.free_symbols,
+    game = SenderReceiverTransformerGS(
+        sender, receiver,
+        loss_objs=loss,
+        pred_n_aux_coef=hp.pred_n_aux_coef,
+        length_cost=hp.length_cost,
+        ada_len_cost_thresh=hp.ada_len_cost_thresh,
+        free_symbols=hp.free_symbols,
     )
     return game
