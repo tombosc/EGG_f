@@ -218,9 +218,9 @@ class SimpleSender(nn.Module):
         features_target = features.unsqueeze(2).expand((bs, n_max_nec, d))
         #  print("fe_tg size", features_target.size())
         ff = torch.gather(z, 1, features_target + 1)
-        pred_n = self.predict_n_necessary(ff.view((bs, -1)))
+        pred_n = self.predict_n_necessary(ff.view((bs, -1)).detach())
         mask = (features == 0)
-        return ff.transpose(1, 0), mask, pred_n
+        return ff.transpose(1, 0), (mask, None), pred_n
 
 
 
@@ -592,7 +592,7 @@ class TransformerSenderGS(nn.Module):
             self.special_symbol_embedding.expand(1, batch_size, -1).to(device)
         )
         input_no_pos = special_symbol
-
+        encoder_mem_key_padding_mask, encoder_mem_mask = encoder_state_mask
         for step in range(self.max_len):
             if self.causal:
                 attn_mask = torch.triu(
@@ -603,8 +603,8 @@ class TransformerSenderGS(nn.Module):
                 #  attn_mask = attn_mask.float().masked_fill(attn_mask == 1, float("-inf"))
             else:
                 attn_mask = None
-            if encoder_state_mask is not None:
-                mm = encoder_state_mask[:, :step+1]
+            if encoder_mem_mask is not None:
+                mm = encoder_mem_mask[:, :step+1]
             else:
                 mm = None
 
@@ -612,6 +612,7 @@ class TransformerSenderGS(nn.Module):
 
             output = self.decoder(
                 input, encoder_state, tgt_mask=attn_mask,
+                memory_key_padding_mask=encoder_mem_key_padding_mask,
                 memory_mask=mm,
             )
             step_logits = self.embedding_to_vocab(output[-1])
@@ -668,9 +669,10 @@ class TransformerSenderGS(nn.Module):
         # expand inputs of tfm for beam search
         encoder_state = encoder_state.unsqueeze(2).expand(-1, -1, beam_S, -1)
         encoder_state = encoder_state.reshape(-1, beam_S * batch_S, embed_dim)
-        if encoder_state_mask is not None:
-            encoder_state_mask = encoder_state_mask.unsqueeze(1).expand(-1, beam_S, -1)
-            encoder_state_mask = encoder_state_mask.reshape(beam_S*batch_S, -1)
+        encoder_mem_key_padding_mask, encoder_mem_mask = encoder_state_mask
+        if encoder_mem_key_padding_mask is not None:
+            encoder_mem_key_padding_mask = encoder_mem_key_padding_mask.unsqueeze(1).expand(-1, beam_S, -1)
+            encoder_mem_key_padding_mask = encoder_mem_key_padding_mask.reshape(beam_S*batch_S, -1)
 
         for step in range(self.max_len):
             if self.causal:
@@ -684,7 +686,8 @@ class TransformerSenderGS(nn.Module):
             
             output = self.decoder(
                 input, encoder_state, tgt_mask=attn_mask,
-                memory_key_padding_mask=encoder_state_mask,
+                memory_key_padding_mask=encoder_mem_key_padding_mask,
+                memory_mask=encoder_mem_mask,
             )
             logits = self.embedding_to_vocab(output[-1])  # (bs x B, V)
             logits = logits / self.temperature
@@ -760,9 +763,15 @@ class TransformerSenderGS(nn.Module):
             torch.ones(L_size, L_size), diagonal=1,
         ).to(device).bool()  # noqa: E226
 
+        encoder_mem_key_padding_mask, encoder_mem_mask = encoder_state_mask
+        if encoder_mem_mask is not None:
+            mm = encoder_mem_mask[:, :input.size(0)]
+        else:
+            mm = None
         output = self.decoder(
             input, encoder_state, tgt_mask=attn_mask,
-            memory_key_padding_mask=encoder_state_mask,
+            memory_key_padding_mask=encoder_mem_key_padding_mask,
+            memory_mask=mm,
         )
 
         logits = self.embedding_to_vocab(output)
@@ -1008,7 +1017,9 @@ class SenderReceiverTransformerGS(nn.Module):
         aux["loss_objs"] = loss['objs']
         aux["weighted_length_cost"] = loss['w_length_cost']
         aux["pred_n_CE"] = loss['pred_n_CE']
-        aux["acc"] = loss['acc']
+        for k, v in loss.items():
+            if k.startswith('acc'):
+                aux[k] = v
         aux["id"] = labels[4].float()
         aux["necessary_features"] = sender_input[1].float()
         aux["sender_input"] = sender_input[0].float()
@@ -1159,12 +1170,14 @@ class PragmaSender(nn.Module):
             mask = - self.mask_value(y_cat).view((bs, nP))
             #  print("gate mean", mask.mean(1).mean(), "std", mask.std(1).mean())
             mask = mask.unsqueeze(1).expand(-1, self.n_heads, -1)
-            mask = mask.unsqueeze(2).expand(-1, -1, self.max_len, -1)
-            mask = mask.reshape((bs * self.n_heads, self.max_len, nP))
+            # we use 2*self.max_len, in case we have to eval the proba of a
+            # concatenation.
+            mask = mask.unsqueeze(2).expand(-1, -1, 2*self.max_len, -1)
+            mask = mask.reshape((bs * self.n_heads, 2*self.max_len, nP))
             x = (raw_x + self.mark_features)[:, 0].transpose(0, 1)
-            return x, mask, pred_n
+            return x, (None, mask), pred_n
         elif self.prediction_features.direct:
-            return y, None, pred_n
+            return y, (None, None), pred_n
 
 def load_game(hp, loss, data_cfg):
     #  sender = Sender(

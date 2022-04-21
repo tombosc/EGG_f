@@ -7,6 +7,7 @@ import argparse
 import json
 import copy
 import os
+from collections import Counter
 
 import torch
 import torch.nn.functional as F
@@ -61,6 +62,41 @@ def entropy(probs):
     """
     return - (probs.log() * probs).sum(1)
 
+def average_bin_scatter(to_bin, bin_by, field_name):
+    """ Very convenient to compute average of to_bin depending on value bin_by.
+    I don't use it because we can't aggregate (average) at the batch-level but
+    at the entire dataset level.
+    """
+    unique, inverse = bin_by.unique(return_inverse=True)
+    out = torch.zeros(unique.size(0)).to(device=to_bin.device)
+    out.scatter_add_(0, inverse, to_bin)
+    out = out / out.scatter_add(0, inverse, torch.ones_like(to_bin))
+    res = {}
+    for unq_key, unq_val in zip(unique, out):
+        res[field_name + '_' + str(unq_key.item())] = unq_val.item()
+    return res
+
+def find_unique_values(to_bin, bin_by, field_name):
+    unique, inverse = bin_by.unique(return_inverse=True)
+    n_unique = unique.size(0)
+    out = {}
+    counts_key = Counter()
+    for key, val in zip(inverse, to_bin):
+        key = key.item()
+        array = out.get(key, None)
+        if array is None:
+            array = torch.ones((to_bin.size(0),)).float() * -1
+            out[key] = array
+        i = counts_key[key] 
+        array[i] = val
+        counts_key[key] += 1
+    res = {}
+    for k in range(n_unique):
+        n = counts_key[k]
+        name_key = str(unique[k].item())
+        res[field_name + '_' + name_key] = out[k][:n].to(to_bin.device)
+    return res
+
 
 def loss(_sender_input, _message, receiver_input,
         receiver_output, labels):
@@ -70,7 +106,9 @@ def loss(_sender_input, _message, receiver_input,
     assert(torch.allclose(_sender_input[:, 0], 
                           receiver_input[torch.arange(bs),i_target]))
     acc = (receiver_output.argmax(1) == i_target).float()
-    return CE, {'acc': acc}
+    acc_per_K = find_unique_values(acc, K, 'acc')
+    acc_per_K['acc'] = acc
+    return CE, acc_per_K
 
 
 def main(params):
