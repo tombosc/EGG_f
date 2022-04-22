@@ -18,6 +18,11 @@ class PragmaPredictionFeatures(Enum):
     direct = 1
     att_bias = 2
 
+class SimpleSenderType(Enum):
+    only_necessary = 1
+    embedding = 2
+
+
 def eos_mask(msg):
     n_D = len(msg.size())
     assert(n_D == 2 or n_D == 3)
@@ -83,6 +88,8 @@ class Hyperparameters(Serializable):
     initial_target_bias: float = 0.0
     sender_type: str = 'simple'
     pragma_prediction_features: str = "direct"
+    simple_sender_type: str = "only_necessary"
+
 
 def make_circulant(v):
     """ Return circulant matrix out of vector.
@@ -183,22 +190,30 @@ class Embedder(nn.Module):
 class SimpleSender(nn.Module):
     def __init__(self, dim_emb, dim_ff, vocab_size, dropout,
             n_properties, n_values, n_max_distractors, 
-            initial_target_bias, 
+            sender_type,
             max_len, 
             n_layers=3, n_head=8):
         super(SimpleSender, self).__init__()
         self.value_embedding = nn.Embedding(1 + n_values * n_properties, dim_emb)
         self.idx_offset = nn.Parameter(torch.arange(0, n_properties) *
                 n_values, requires_grad=False)
-        self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties+1, dim_emb)))
-        self.dummy_feature = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
         self.n_properties = n_properties
         self.dim_emb = dim_emb
         self.n_max_distractors = n_max_distractors
-        self.predict_n_necessary = nn.Sequential(
-            nn.Linear(2*dim_emb, n_properties),  # when given ff
-            #  nn.Linear(dim_emb, n_properties),
-        )
+        self.sender_type = sender_type
+        if self.sender_type == SimpleSenderType.embedding:
+            self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties, dim_emb)))
+            self.target_embedding = nn.Parameter(
+                torch.randn(size=(1, 1, dim_emb)))
+            self.predict_n_necessary = nn.Sequential(
+                nn.Linear(dim_emb, 1),
+            )
+        elif self.sender_type == SimpleSenderType.only_necessary:
+            self.mark_features = nn.Parameter(torch.randn(size=(1, n_properties+1, dim_emb)))
+            self.dummy_feature = nn.Parameter(torch.randn(size=(1, 1, dim_emb)))
+            self.predict_n_necessary = nn.Sequential(
+                nn.Linear(2*dim_emb, n_properties),  
+            )
 
     def forward(self, x_and_features):
         x, features = x_and_features
@@ -207,18 +222,24 @@ class SimpleSender(nn.Module):
         x = x[:, 0]  # disregard objects that are not target
         obj_emb = self.value_embedding(x + self.idx_offset)  
         d = obj_emb.size(-1)
-        # concatenate to all features a "fake" missing feature
-        z = torch.cat((self.dummy_feature.expand((bs, 1, d)), obj_emb), axis=1)
-        # mark all objects with a property specific embedding
-        z = z + self.mark_features
-        #  print("fe size", features.size())
-        #  print("z size", z.size())
         n_max_nec = features.size(1)
-        features_target = features.unsqueeze(2).expand((bs, n_max_nec, d))
-        #  print("fe_tg size", features_target.size())
-        ff = torch.gather(z, 1, features_target + 1)
-        pred_n = self.predict_n_necessary(ff.view((bs, -1)).detach())
-        mask = (features == 0)
+        if self.sender_type == SimpleSenderType.only_necessary:
+            # concatenate to all features a "fake" missing feature
+            z = torch.cat((self.dummy_feature.expand((bs, 1, d)), obj_emb), axis=1)
+            # mark all objects with a property specific embedding
+            z = z + self.mark_features
+            features_target = features.unsqueeze(2).expand((bs, n_max_nec, d))
+            ff = torch.gather(z, 1, features_target + 1)
+            mask = (features == 0)
+            pred_n = self.predict_n_necessary(ff.view((bs, -1)).detach())
+        elif self.sender_type == SimpleSenderType.embedding:
+            # (bs, n_max_nec, n_prop+1)
+            H = torch.nn.functional.one_hot(features+1, self.n_properties+1)
+            # (bs, n_prop+1, 1) x (1, 1, d) = (bs, n_prop+1, d)
+            embed = (H.sum(1).unsqueeze(2).float() * self.target_embedding)
+            ff = obj_emb + self.mark_features + embed[:, 1:]
+            pred_n = self.predict_n_necessary(ff.detach()).squeeze(2)  # (bs, n_prop)
+            mask = None
         return ff.transpose(1, 0), (mask, None), pred_n
 
 
@@ -1158,7 +1179,7 @@ class PragmaSender(nn.Module):
         #  y_cat = y.transpose(0, 1).reshape((bs, -1))  # bs, nP×d
         #  pred_n = self.predict_n_necessary(y_cat)
         # n_prop, bs, d
-        if self.prediction_features.att_bias:
+        if self.prediction_features == PragmaPredictionFeatures.att_bias:
             # compute a memory_mask that biases some attention weights
             # negatively (features that are not necessary to send)
             # these biases will be constant during the entire decoding of the
@@ -1173,7 +1194,7 @@ class PragmaSender(nn.Module):
             mask = mask.reshape((bs * self.n_heads, 2*self.max_len, nP))
             x = (raw_x + self.mark_features)[:, 0].transpose(0, 1)
             return x, (None, mask), pred_n
-        elif self.prediction_features.direct:
+        elif self.prediction_features == PragmaPredictionFeatures.direct:
             return y, (None, None), pred_n
 
 def load_game(hp, loss, data_cfg):
@@ -1185,7 +1206,7 @@ def load_game(hp, loss, data_cfg):
             n_properties=data_cfg.n_features,
             n_values=data_cfg.max_value,
             n_max_distractors=data_cfg.max_distractors,
-            initial_target_bias=hp.initial_target_bias,
+            sender_type=SimpleSenderType[hp.simple_sender_type],
             max_len=hp.max_len,
             n_layers=hp.receiver_nlayers,
             n_head=8,
