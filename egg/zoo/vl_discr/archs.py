@@ -238,6 +238,8 @@ class SimpleSender(nn.Module):
             H = torch.nn.functional.one_hot(features+1, self.n_properties+1)
             # (bs, n_prop+1, 1) x (1, 1, d) = (bs, n_prop+1, d)
             embed = (H.sum(1).unsqueeze(2).float() * self.target_embedding)
+            # equivalent to:
+            #  embed = torch.bmm(H.sum(1).unsqueeze(2).float(), self.target_embedding.expand((bs, 1, -1)))
             ff = obj_emb + self.mark_features + embed[:, 1:]
             pred_n = self.predict_n_necessary(ff.detach()).squeeze(2)  # (bs, n_prop)
             mask = None

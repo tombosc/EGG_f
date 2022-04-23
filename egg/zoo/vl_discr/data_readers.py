@@ -49,7 +49,7 @@ class SimpleData(Dataset):
         max_distractors: int = 4  # hardcoded, depends on disentangled...
         ood: bool = True  # save some combinations for OoD (see code)
     
-    def sample_objects(self, rng, N_distr):
+    def sample_objects(self, rng, N_distr, ood, ood_hard=False):
         zero = np.zeros(self.n_features, dtype=int)
         # sample an object uniformly
         x_1 = rng.choice(self.max_value, size=self.n_features) + 1
@@ -59,9 +59,21 @@ class SimpleData(Dataset):
         modified_features = []
         for e in range(N_distr):
             distractor = prev.copy()
-            possible_features = range_except(self.n_features,
-                    modified_features, start=0)
-            i_feat = rng.choice(possible_features)
+            if ood and ood_hard and e == 0:
+                # example: 3 objects
+                # 1 1 1 1
+                # 2 1 1 1 ← target in hard mode: need to transmit
+                # 2 1 2 1   feature 0 along with feature 2 here.
+                i_feat = 0
+            elif ood and not ood_hard and (e in [0, 1]):
+                if e == 0:
+                    i_feat = 1
+                elif e == 1:
+                    i_feat = 2
+            else:
+                possible_features = range_except(self.n_features,
+                        modified_features, start=0)
+                i_feat = rng.choice(possible_features)
             modified_features.append(i_feat)
             #  print(f"Sel feature = {i_feat} with val {prev[i_feat]}")
             possible_values = range_except(self.max_value, [prev[i_feat]],
@@ -77,13 +89,33 @@ class SimpleData(Dataset):
         objects = np.asarray(objects)
         return objects
 
+    def sample_ood(self, n_examples, hard):
+        assert(self.ood)
+        rng = np.random.default_rng(self.seed)
+        n_distractors = rng.choice(self.max_distractors, 
+                                   p=self.vector_proba_ood,
+                                   size=n_examples) + 1
+        objects = [self.sample_objects(rng, i, ood=True, ood_hard=hard) for i in n_distractors]
+        data = []
+        for id_, (N, o) in enumerate(zip(n_distractors, objects)):
+            # in hard mode, all the targets are the 2nd objects
+            sender_input = np.vstack((o[1][np.newaxis, :],
+                o[0][np.newaxis, :], o[2:]))
+            permut = rng.permutation(self.max_distractors + 1)
+            i_target = np.where(permut == 1)[0][0]
+            K2, necessary_features = get_necessary_features(torch.tensor(sender_input).unsqueeze(0))
+            labels = (np.asarray([2]), np.asarray([N]), np.asarray([i_target]),
+                np.asarray(necessary_features[0]), id_)
+            data.append((sender_input, labels, o[permut]))
+        return data
+
 
     @staticmethod
-    def is_ood(target_obj, necessary_features):
-        if len(necessary_features) == 2 and 0 in necessary_features:
+    def is_ood(necessary_features):
+        nec = tuple([n for n in necessary_features if n != -1])
+        if len(nec) == 2 and 0 in nec:
             return True
-        if len(necessary_features) == 2 and (
-            1 in necessary_features and 2 in necessary_features):
+        if len(nec) == 2 and (1 in nec and 2 in nec):
             return True
         return False
 
@@ -91,6 +123,7 @@ class SimpleData(Dataset):
     def __init__(self, config):
         c = config
         self.data = []
+        self.seed = c.seed
         rng = np.random.default_rng(c.seed)
         self.n_features = c.n_features
         self.max_value = c.max_value
@@ -102,11 +135,12 @@ class SimpleData(Dataset):
         # N_properties needed to distinguish = K
         
         assert(c.max_distractors == 4)
+        self.vector_proba_ood = np.asarray([0., 1/4., 1/4., 2/4.])
         if c.disentangled:
-            vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
+            self.vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
             prop_1 = np.asarray([1., 2/3., 2/4., 2/5.])
-            n_distractors = rng.choice(c.max_distractors, p=vector_proba, size=c.n_examples) + 1
-            p_1 = np.dot(vector_proba, prop_1)
+            n_distractors = rng.choice(c.max_distractors, p=self.vector_proba, size=c.n_examples) + 1
+            p_1 = np.dot(self.vector_proba, prop_1)
             print(f"p(K=1)={p_1}, p(K=2)={1-p_1}")
             # in the case where K=2, one chance over 2, in the case where K=4,
             # one over 4 (since equal proba of needing 2 attributes and 1
@@ -116,9 +150,9 @@ class SimpleData(Dataset):
             # where we need 2 attributes), in the case where K=6, 2 chances
             # over 4
             assert(c.n_features >= 5)
-            vector_proba = np.asarray([0., 1/4., 1/4., 2/4.])
+            self.vector_proba = np.asarray([0., 1/4., 1/4., 2/4.])
             #  n_distractors = rng.choice(c.max_distractors, p=[0, 0, 1/2, 0, 1/2], size=c.n_examples) + 1
-            n_distractors = rng.choice(c.max_distractors, p=vector_proba, size=c.n_examples) + 1
+            n_distractors = rng.choice(c.max_distractors, p=self.vector_proba, size=c.n_examples) + 1
         dict_K = {  # maps (N+1, i) to how many features are needed
             (2, 0): 1, (2, 1): 1,
             (3, 0): 1, (3, 1): 2, (3, 2): 1,
@@ -128,7 +162,7 @@ class SimpleData(Dataset):
         }
         for id_, N in enumerate(n_distractors):
             while True:
-                objects = self.sample_objects(rng, N)
+                objects = self.sample_objects(rng, N, ood=False)
                 # select target randomly
                 # this might need to be repeated, in case we do OoD, since we don't
                 # want "special" OoD samples in the train set 
@@ -150,10 +184,9 @@ class SimpleData(Dataset):
                     ))
                     assert(np.allclose(sender_input[0], objects[i_target]))
                     K2, necessary_features = get_necessary_features(torch.tensor(sender_input).unsqueeze(0))
+                    necessary_features = necessary_features[0]  # since we don't pass a batch
                     #  print("nec", necessary_features)
-                    if not self.ood or (
-                            not self.is_ood(objects[i_target],
-                                necessary_features[0])):
+                    if not self.ood or (not self.is_ood(necessary_features)):
                         break
                     elif patience >= 1:
                         patience -= 1
@@ -164,27 +197,19 @@ class SimpleData(Dataset):
                     # when we break the loop here, we can finish the procedure
                     # and the object is not ood. else, we regenerate. 
                     break
-            necessary_features = necessary_features[0]  # since we don't pass a batch
             if K2 == 1:
-                # padding
-                necessary_features = np.concatenate((necessary_features, np.asarray([-1])))
+                necessary_features = necessary_features + (-1,)  # padding
             # verify that the computation of necessary feature yields at least
             # the same number of necessary features as was planned
             assert(K == K2.item())
             labels = (
                 np.asarray([K]), np.asarray([N]),
                 np.asarray([i_target]),
-                necessary_features,
+                np.asarray(necessary_features),
                 id_,
             )
             receiver_input = objects
-            self.data.append((
-                sender_input,
-                labels,
-                receiver_input,
-            ))
-            #  print("Add one")
-                #  print(self.data[-1])
+            self.data.append((sender_input, labels, receiver_input))
 
     def __len__(self):
         return len(self.data)
@@ -211,17 +236,39 @@ class SimpleData(Dataset):
             p_receiver_i,
         )
 
-class TesterLoss(unittest.TestCase):
+class TesterData(unittest.TestCase):
+    def test_ood_data(self):
+        print("OoD test")
+        c = SimpleData.Settings(n_examples=10, max_value=10, ood=True)
+        data = SimpleData(c)
+        dataset = data.sample_ood(100, hard=True)
+        for sender_in, labels, recv_in in dataset:
+            K, N, target, nec_features, x = labels
+            assert(nec_features[0] == 0)
+            assert(np.allclose(sender_in[0], recv_in[target]))
+            assert(data.is_ood(nec_features))
+        dataset = data.sample_ood(100, hard=False)
+        for sender_in, labels, recv_in in dataset:
+            K, N, target, nec_features, x = labels
+            assert(nec_features[0] == 1 and nec_features[1] == 2)
+            assert(np.allclose(sender_in[0], recv_in[target]))
+            assert(data.is_ood(nec_features))
+
     def test_simple_data(self):
-        c = SimpleData.Settings(n_examples=4000, max_value=10)
+        print("Simple data test")
+        c = SimpleData.Settings(n_examples=4000, max_value=10,
+                disentangled=True, ood=False)
         data = SimpleData(c)
         print("Fingerprint", dataset_fingerprint(data))
         count_K = Counter()
         for sender_in, labels, recv_in in data.data:
             K, N, target, nec_features, x = labels
             count_K[K[0]] += 1
-            assert(not data.ood or not data.is_ood(nec_features, sender_in[0]))
+            #  print(sender_in[0], nec_features)
+            assert(np.allclose(sender_in[0], recv_in[target]))
+            assert(not data.ood or not data.is_ood(nec_features))
         print(count_K)
+
 
 
 def loaders_from_dataset(dataset, config_data, train_bs, valid_bs,
