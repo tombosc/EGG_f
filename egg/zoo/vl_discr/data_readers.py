@@ -48,6 +48,7 @@ class SimpleData(Dataset):
         disentangled: bool = True
         max_distractors: int = 4  # hardcoded, depends on disentangled...
         ood: bool = True  # save some combinations for OoD (see code)
+        data_version: float = 1.0
     
     def sample_objects(self, rng, N_distr, ood, ood_hard=False):
         zero = np.zeros(self.n_features, dtype=int)
@@ -134,25 +135,30 @@ class SimpleData(Dataset):
         # N_distractors: N
         # N_properties needed to distinguish = K
         
-        assert(c.max_distractors == 4)
-        self.vector_proba_ood = np.asarray([0., 1/4., 1/4., 2/4.])
-        if c.disentangled:
-            self.vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
-            prop_1 = np.asarray([1., 2/3., 2/4., 2/5.])
-            n_distractors = rng.choice(c.max_distractors, p=self.vector_proba, size=c.n_examples) + 1
-            p_1 = np.dot(self.vector_proba, prop_1)
-            print(f"p(K=1)={p_1}, p(K=2)={1-p_1}")
-            # in the case where K=2, one chance over 2, in the case where K=4,
-            # one over 4 (since equal proba of needing 2 attributes and 1
-            # attributes
-        else:
-            # in the case where K=4, 1 chances over 2 to get it randomly (since only 2 cases
-            # where we need 2 attributes), in the case where K=6, 2 chances
-            # over 4
-            assert(c.n_features >= 5)
-            self.vector_proba = np.asarray([0., 1/4., 1/4., 2/4.])
-            #  n_distractors = rng.choice(c.max_distractors, p=[0, 0, 1/2, 0, 1/2], size=c.n_examples) + 1
-            n_distractors = rng.choice(c.max_distractors, p=self.vector_proba, size=c.n_examples) + 1
+        if c.data_version == 1.0:
+            assert(c.max_distractors == 4)
+            self.vector_proba_ood = np.asarray([0., 1/4., 1/4., 2/4.])
+            if c.disentangled:
+                self.vector_proba = np.asarray([1/8., 1/8., 1/4., 2/4.])
+            else:
+                assert(c.n_features >= 5)
+                self.vector_proba = np.asarray([0., 1/4., 1/4., 2/4.])
+        elif c.data_version == 1.1:
+            assert(c.max_distractors == 5)
+            self.vector_proba_ood = np.asarray([0., 1/4., 1/4., 1/4., 1/4.])
+            if c.disentangled:
+                self.vector_proba = np.asarray([1/8., 1/8., 1/4., 1/4., 1/4.])
+            else:
+                assert(c.n_features >= 5)
+                self.vector_proba = np.asarray([0., 1/4., 1/4., 1/4., 1/4.])
+        else: 
+            raise NotImplementedError()
+
+        prob_K_1 = np.asarray([2/2., 2/3., 2/4., 2/5., 2/6.])
+        p_1 = np.dot(self.vector_proba, prob_K_1[:c.max_distractors])
+        print(f"p(K=1)={p_1}, p(K=2)={1-p_1}")
+
+        n_distractors = rng.choice(c.max_distractors, p=self.vector_proba, size=c.n_examples) + 1
         dict_K = {  # maps (N+1, i) to how many features are needed
             (2, 0): 1, (2, 1): 1,
             (3, 0): 1, (3, 1): 2, (3, 2): 1,
@@ -254,10 +260,10 @@ class TesterData(unittest.TestCase):
             assert(np.allclose(sender_in[0], recv_in[target]))
             assert(data.is_ood(nec_features))
 
-    def test_simple_data(self):
+    def test_old_simple_data(self):
         print("Simple data test")
-        c = SimpleData.Settings(n_examples=4000, max_value=10,
-                disentangled=True, ood=False)
+        c = SimpleData.Settings(n_examples=3000, max_value=8,
+                disentangled=True, ood=True)
         data = SimpleData(c)
         print("Fingerprint", dataset_fingerprint(data))
         count_K = Counter()
@@ -269,6 +275,21 @@ class TesterData(unittest.TestCase):
             assert(not data.ood or not data.is_ood(nec_features))
         print(count_K)
 
+    def test_simple_data(self):
+        print("Simple data test")
+        c = SimpleData.Settings(n_examples=3000, max_value=10,
+                n_features=7, max_distractors=5, data_version=1.1,
+                disentangled=True, ood=True)
+        data = SimpleData(c)
+        print("Fingerprint", dataset_fingerprint(data))
+        count_K = Counter()
+        for sender_in, labels, recv_in in data.data:
+            K, N, target, nec_features, x = labels
+            count_K[K[0]] += 1
+            #  print(sender_in[0], nec_features)
+            assert(np.allclose(sender_in[0], recv_in[target]))
+            assert(not data.ood or not data.is_ood(nec_features))
+        print(count_K)
 
 
 def loaders_from_dataset(dataset, config_data, train_bs, valid_bs,
