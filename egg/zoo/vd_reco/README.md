@@ -30,7 +30,7 @@ conda activate egg
 
 Edit `train_wrap.sh` to understand where results are stored, what are the arguments of this script, and how to select an hyperparameter config file. 
 
-The hyperparameters are stored in [egg/zoo/vd_reco/hyperparam_grid/](egg/zoo/vd_reco/hyperparam_grid/) in `json` files. Each parameter should be pretty self contained, except a few that I can explain here:
+The hyperparameters are stored in [egg/zoo/vd_reco/hyperparam_grid/](hyperparam_grid/) in `json` files. Each parameter should be pretty self contained, except a few that I can explain here:
 
 - `max_len`: maximum message length, excluding the end of sentence token.
 - `patience`: patience is a parameter for early stopping: everytime we reach some minimum loss value, a count is initialised to `patience`. After each epoch this count is decreased and the training stops when there is no more patience. 
