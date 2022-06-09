@@ -1,24 +1,25 @@
-import json
-import glob
-import shutil
-import os
 import argparse
-import numpy as np
-import subprocess
-from egg.zoo.vd_reco.train import main
-from egg.zoo.vd_reco.train_vl import main as main_vl
 from contextlib import redirect_stdout
+import glob
 from hashlib import sha256
+import json
+import os
+import shutil
+
+from egg.zoo.vd_reco.train_vl import main as main_vl
+import numpy as np
+
 
 if __name__ == '__main__':
-    parser = argparse.ArgumentParser()
+    desc = ("Run n_runs sequentially in exp_dir, with parameters randomly "
+            "sampled as described in config_json")
+    parser = argparse.ArgumentParser(description=desc)
     parser.add_argument('exp_dir', type=str)
     parser.add_argument('config_json', type=str)
     parser.add_argument('seed', type=int)
     parser.add_argument('n_runs', type=int)
     parser.add_argument('--backup', type=str, help='Backup to directory after each run.')
     parser.add_argument('--cuda', default=False, action='store_true')
-    parser.add_argument('--variable_length', default=False, action='store_true')
     args = parser.parse_args()
 
     print("Running with seed", args.seed)
@@ -44,8 +45,6 @@ if __name__ == '__main__':
 
     n_run = 0
     while n_run < args.n_runs:
-        #  cmd = ['bash', '-c', '"conda activate egg; python -m egg.zoo.vd_reco.train']
-        #  cmd = ["python", "-m", "egg.zoo.vd_reco.train"]
         cmd = ['--no_distributed']
         if not args.cuda:
             cmd.append('--no_cuda')
@@ -73,17 +72,14 @@ if __name__ == '__main__':
             continue
         print(' '.join(cmd))
         print(H)
-        # need to write something in the backupfile! otherwise, several scripts
-        # can start to compute the same run!
+        # write something in the backupfile! else, several scripts can start 
+        # the same run.
         if args.backup:
             with open(backup_fn_output, 'w') as f:
                 f.write('Computation in process...')
         with open(fn_output, 'w') as f_out:
             with redirect_stdout(f_out):
-                if args.variable_length:
-                    main_vl(cmd)
-                else:
-                    main(cmd)
+                main_vl(cmd)
         if args.backup:
             shutil.copy(fn_output, backup_fn_output)
         n_run += 1

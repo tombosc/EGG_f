@@ -48,8 +48,8 @@ def common_filter_runs(df):
     min_filter, max_filter = 2.0, 7.0
     print(f"Filter out runs with avg length < {min_filter}, > {max_filter}")
     len_before_filtering = len(df)
-    df = df[df['final_length'] > 2.0]
-    df = df[df['final_length'] < 7.0]
+    df = df[df['final_length'] > min_filter]
+    df = df[df['final_length'] < max_filter]
     print(f"Before = {len_before_filtering}, after = {len(df)}")
     print("Final lengths:")
     print(df[['final_length_1.0', 'final_length_2.0', 'final_length_3.0']].mean())

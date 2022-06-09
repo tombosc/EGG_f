@@ -1,22 +1,26 @@
 #!/bin/bash
 
-# Run random search
-conda activate egg_env
-echo $CONDA_PREFIX
-
-NAME="proto_min1_adam"
-SEED=$1
+# Run random search. Take 2 arguments:
+SEED=$1 
 N_RUNS=$2
-EXP_BASENAME="${NAME}_sd${SEED}"
-# if running on a cluster, it's good to write data on the local node's drive.
-# once training is done, copy the results (models, logs) at another location, 
-# cf do_at_the_end() and exit_script().
-# if you're not running on a cluster, it doesn't matter much.
+
+# in the paper:
+# NAME is "proto_min1_adam", "proto_min2_adam" or "proto_min2B_adam"
+# corresponds to a file in egg/zoo/vd_reco/hyperparam_grid/$NAME.json
+NAME="proto_min1_adam"  
+# if running on a cluster, it's good to write data on the local node directly.
+# that's TMP_EXP_DIR
 TMP_EXP_DIR="/tmp/egg_exps_tmp"  # or ${SLURM_TMPDIR}/...
-FINAL_EXP_DIR="~/EGG/res_${NAME}"
+# once training is done, copy the results (models, logs) at another location 
+# FINAL_EXP_DIR, cf do_at_the_end() and exit_script().
+FINAL_EXP_DIR="$HOME/EGG/res_${NAME}"
+# if you're not running on a cluster, it doesn't matter much.
+EXP_BASENAME="${NAME}_sd${SEED}"
 mkdir -p $TMP_EXP_DIR
 mkdir -p $FINAL_EXP_DIR
-echo $TMP_EXP_DIR 
+echo "Temporary directory: $TMP_EXP_DIR"
+echo "Final directory: $FINAL_EXP_DIR"
+echo "Conda environment: $CONDA_PREFIX"
 
 do_at_the_end() {
     cp -dr $TMP_EXP_DIR/* $FINAL_EXP_DIR/

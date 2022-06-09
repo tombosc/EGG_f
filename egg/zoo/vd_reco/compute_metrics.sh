@@ -1,11 +1,11 @@
 #!/bin/bash
 
-QUALITATIVE=0
-CONCATENABILITY=0  # and transitivity, too
-ROLE_PRED=0
-CONTEXT_INDEPENDENCE=0
-GENERALISATION_OOD=0
-GENERALISATION_IID=0
+QUALITATIVE=1  # qualitative analysis
+CONCATENABILITY=1  # and transitivity, too
+ROLE_PRED=1  # role prediction error
+CONTEXT_INDEPENDENCE=0  # context independence, inspired by Bogin & al 2018 (but different)
+GENERALISATION_OOD=1  # OoD generalisation
+GENERALISATION_IID=1  # In-distribution generalisation
 
 for N in res_proto_min*_adam/*
 do
@@ -16,7 +16,8 @@ do
 	if [ ! -d $DIR ]; then
 		continue
 	fi
-	# theoretically we shoud look at best, not last, but this is roughly similar here
+	# in principle we shoud look at best, not last...
+	# this sort of works
 	LAST_TEST_DICT=`tail -n 2 $N | head -n 1`
 	# extract length
 	echo $DIR
@@ -27,7 +28,7 @@ do
 	# not the best one. 
 	# 3 runs out of 100 were excluded wrongfully and I had to detect that in the
 	# statistical_tests.py script (there were NaNs).
-	# a more brutal way to avoid that is simply to remove these checks.
+	# to be sure that you don't miss any runs, you can simply uncomment these checks
 	if (( $(echo "$LENGTH < 2" |bc -l) )); then
 		echo "avg length $LENGTH too small"
 		continue

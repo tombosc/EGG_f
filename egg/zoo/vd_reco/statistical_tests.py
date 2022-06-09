@@ -36,23 +36,28 @@ def retrieve_results(directories):
         except Exception as e:
             print("ERR!!!", e)
             continue
-        def find_best_in_te(field):
-            tuples = zip(te[field], te['loss'])
-            sorted_ = sorted(tuples, key= lambda e: e[1])
-            best = sorted_[0]
-            return best[0]
+        # find best test loss:
+        indices = range(len(te['loss']))
+        tuples = zip(indices, te['loss'])
+        sorted_ = sorted(tuples, key= lambda e: e[1])
+        best_idx = sorted_[0][0] 
+        # compute corresponding best train loss
+        # but the validation is less frequent than the train
+        matching_train_idx = best_idx * int(cfg['validation_freq'])
+        final_train_loss = tr['loss_objs'][matching_train_idx]
         cfg.update({
-            'final_length': find_best_in_te('length'),
-            'final_loss': find_best_in_te('loss_objs'),
-            'final_H1': find_best_in_te('entropy_1.0'),
-            'final_H2': find_best_in_te('entropy_2.0'),
-            'final_H3': find_best_in_te('entropy_3.0'),
+            'final_length':  te['length'][best_idx],
+            'final_loss': te['loss_objs'][best_idx],
+            'final_train_loss': final_train_loss,
+            'final_H1': te['entropy_1.0'][best_idx],
+            'final_H2': te['entropy_2.0'][best_idx],
+            'final_H3': te['entropy_3.0'][best_idx],
         })
         for k in te.keys():
             if k.startswith('length'):
                 cfg.update({
                     'init_' + k: te[k][0],
-                    'final_' + k: find_best_in_te(k),
+                    'final_' + k: te[k][best_idx],
                 })
                 
         try:
@@ -190,27 +195,10 @@ def retrieve_results(directories):
 def statistical_analysis(df, predicted, indep_variables):
     """ Perform linear regression, statistical sig tests and plot residuals.
     """
-    data = df[(~ df[predicted].isna())].copy()
-    # when ada_len_cost_thresh is set to 0, the penalty is always active.
-    # (this means that $\lambda$ is infinite, in the notations of the paper)
-    # when it is above 0, it is only active when length_cost > 0.
-    data['ada_len_dummy'] = data['ada_len_cost_thresh'] * (data['length_cost'] != 0.0)
-    data['sender_mask_padded_d'] = (data['sender_mask_padded'] == 'True').astype(float)
+    assert(indep_variables[-1] == 'object_centric_dummy')  # ugly but will do, cf return
+    data = df[(~ df[predicted].isna())].copy()  # remove NA
     data['object_centric_dummy'] = (data['flat_attention'] == 'False').astype(float)
-    data['min1'] = (data['free_symbols'] == 1.0).astype(float)
-    data['min2'] = (data['free_symbols'] == 2.0).astype(float)
-    # TODO write a function that does dummy coding automatically for all
-    # possible values
-    data['sender_hidden_d'] = (data['sender_hidden'] > 300).astype(float)
-    data['snl2'] = (data['sender_nlayers'] >= 2).astype(float)
-    data['snl3'] = (data['sender_nlayers'] >= 3).astype(float)
-    data['rnl2'] = (data['receiver_nlayers'] >= 2).astype(float)
-    data['rnl3'] = (data['receiver_nlayers'] >= 3).astype(float)
 
-    #  n_data = len(data)
-    #  data = data[~ data[indep_variables].isna()]
-    #  n_data_not_missing = len(data)
-    #  print("Filter:", n_data, n_data_not_missing)
     X = data[indep_variables].values
     X = sm.add_constant(X)
     y = data[predicted].values
@@ -248,19 +236,7 @@ if __name__ == '__main__':
     print(same_edges[['trans_L_edges']].value_counts())
     results = []
 
-    indep_variables = [
-        'temperature', 
-        'ada_len_dummy', 'length_cost',
-        'sender_hidden_d', 'sender_mask_padded_d',  # hyperparams
-        'snl2', 'snl3', 'rnl2', 'rnl3',
-        'min1', 'min2',
-        # the following are "mediators": they're caused by the hyperparameters
-        # but we want to control for them to avoid measuring their effects. 
-        'final_H1', 'final_H2', 'final_H3',  
-        'final_length_1.0', 'final_length_2.0', 'final_length_3.0',
-        'object_centric_dummy',  # outcome variable
-    ]
-    metrics = [
+    metrics = [  # WARN don't move them around... 
         (r'$C^L \uparrow$', 'concatL_add'),
         (r'$C^S \uparrow$', 'concatS_add'),
         (r'CI', 'CI'),
@@ -268,13 +244,39 @@ if __name__ == '__main__':
         (r'Ø(%)', 'fraction_empty'),
         (r'$T^L \uparrow$', 'loss_gap'),
         (r'$T^S \uparrow$', 'log_prob_gap'),
-        (r'IID gene (Σα=1)', 'test_generalization1'),
-        (r'IID gene (Σα=2)', 'test_generalization2'),
-        (r'IID gene (Σα=3)', 'test_generalization3'),
-        (r'OoD gene (Σα=1)', 'test_generalization_iid1'),
-        (r'OoD gene (Σα=2)', 'test_generalization_iid2'),
-        (r'OoD gene (Σα=3)', 'test_generalization_iid3'),
+        (r'IID gene (Σα=1)', 'test_generalization_iid1'),
+        (r'IID gene (Σα=2)', 'test_generalization_iid2'),
+        (r'IID gene (Σα=3)', 'test_generalization_iid3'),
+        (r'OoD gene (Σα=1)', 'test_generalization1'),
+        (r'OoD gene (Σα=2)', 'test_generalization2'),
+        (r'OoD gene (Σα=3)', 'test_generalization3'),
+        #  (r'IID train reco', 'final_train_loss'),
+        #  (r'IID valid reco', 'final_loss'),
+        #  (r'IID test reco', 'test_generalization_iid'),
     ]
+
+    all_H_and_lengths = ['final_H1', 'final_H2', 'final_H3',
+            'final_length_1.0', 'final_length_2.0', 'final_length_3.0']
+    #  Hs = ['final_H1', 'final_H2', 'final_H3']
+    Hs = ['final_H1', 'final_H2', 'final_H3']
+    controls = {
+        #  'concatL_add': ['test_generalization_iid'],
+        #  'loss_gap': ['test_generalization_iid'],
+        'concatL_add': ['final_H1', 'final_H2'],
+        'loss_gap': ['final_H1', 'final_H2'],
+        'concatS_add': ['final_H1', 'final_H2'],
+        'log_prob_gap': ['final_H1', 'final_H2'],
+        'CI': ['test_generalization_iid'],  # unused, outdated?
+        'role_test_2gram': ['final_H1'],
+        'fraction_empty': ['test_generalization_iid'],  # unused, outdated?
+        'test_generalization_iid1': ['final_H1'],
+        'test_generalization_iid2': ['final_H2'],
+        'test_generalization_iid3': ['final_H3'],
+        'test_generalization1': ['final_H1'],
+        'test_generalization2': ['final_H2'],
+        'test_generalization3': ['final_H3'],
+    }
+
     metric_internal_names = [iname for _, iname in metrics]
     metric_names = [ename for ename, _ in metrics]
 
@@ -293,42 +295,38 @@ if __name__ == '__main__':
                             res['pvalue_star'] + '}$')
         return res
 
+    results_OC = {}
+    results_FA = {}
+    agged = {}
+
+    def aggregate(dataframe):
+        return dataframe.groupby('flat_attention').agg(['mean', 'std'])
+
     for name, internal_name in metrics:
         print(f"------- {name}")
+        # Transitivity metrics are analyzed on a subset. Transitivity makes
+        # sense only when concatenability is low enough, so we work on the
+        # top 50% most concatenable runs only.
         if internal_name == r'loss_gap':
             df_to_analyze = filter_above_median(df, ['concatL_add'])
         elif internal_name == r'log_prob_gap':
             df_to_analyze = filter_above_median(df, ['concatS_add'])
         else:
             df_to_analyze = df
-        res = statistical_analysis(df_to_analyze, internal_name, indep_variables)
+        # pvalues are computed for the LAST covariate which should be the target!
+        covariates = controls[internal_name] + ['object_centric_dummy']
+        res = statistical_analysis(df_to_analyze, internal_name, covariates)
         res = process(res, name)
         results.append(res)
+        agged[internal_name] = aggregate(df_to_analyze[['flat_attention', internal_name]])[internal_name]
+
     results = listdict2dictlist(results)
-    print(' & '.join(results['metric']))
-    print(' & '.join(results['coef_star']))
-
-    # print table
-    def aggregate(dataframe):
-        return dataframe.groupby('flat_attention').agg(['mean', 'std'])
-
-    agged = aggregate(df)[metric_internal_names]
-
-    results_OC = {}
-    results_FA = {}
 
     def mean_std_latex(mean, std, stars=''):
         return f"${mean:.2g}\pm{std:.2g}^" + "{" + stars + "}$"
 
     for name, internal_name, statsig in zip(metric_names,
             metric_internal_names, results['pvalue_star']):
-
-        if internal_name == r'loss_gap':
-            df_to_analyze = filter_above_median(df, ['concatL_add'])
-        elif internal_name == r'log_prob_gap':
-            df_to_analyze = filter_above_median(df, ['concatS_add'])
-        else:
-            df_to_analyze = df
         OC_mean = agged[internal_name]['mean']['False']
         FA_mean = agged[internal_name]['mean']['True']
         OC_std = agged[internal_name]['std']['False']
@@ -348,3 +346,4 @@ if __name__ == '__main__':
     print_subset((5,6,3))
     print_subset((7,8,9))
     print_subset((10,11,12))
+    #  print_subset((13,14,15))
